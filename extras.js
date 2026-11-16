@@ -198,7 +198,7 @@ function planMealsFor(d, slots) {
     }
     const rid = S.menu.days[d][s.key]; const r = R(rid);
     if (!r) return { s, name: '—', n: null };
-    return { s, name: r.n, rid, n: r.free ? { k: s.k, p: s.p, c: s.c, f: s.f } : sumLines(fitLines(r, s, ctxKey(d, s.key, 'fit'))), free: !!r.free };
+    return { s, name: r.n, rid, n: mealNutr(rid, s, ctxKey(d, s.key, 'fit')), free: !!r.free };
   });
 }
 
@@ -467,7 +467,9 @@ function xAction(t) {
   if (a === 'cslot') { calcSlot = d.k; calcNeed = null; render(); return; }
   if (a === 'cmacro') { calcMacro = d.k; calcNeed = null; render(); return; }
   if (a === 'cneedreset') { calcNeed = null; render(); return; }
-  if (a === 'ptype') { planType = d.v; render(); }
+  if (a === 'ptype') { planType = d.v; render(); return; }
+  if (a === 'seenupd') { S.seenVersion = APP_VERSION; store.save(); if (d.go) TAB = d.go; render(); return; }
+  if (a === 'discarddraft') { if (confirm('¿Descartar lo que no guardaste?')) { draft.clear(); render(); } }
 }
 
 document.addEventListener('input', (e) => {
@@ -486,6 +488,7 @@ document.addEventListener('change', (e) => {
     if (t.checked && it && it.n) L.done[t.dataset.done] = { name: it.name, k: it.n.k, p: it.n.p, c: it.n.c, f: it.n.f }; else delete L.done[t.dataset.done];
     store.save(); render();
   }
+  if (t.name && t.name.startsWith('sp_') && t.closest('#pform')) { const box = document.querySelector(`.spc[data-for="${t.name.slice(3)}"]`); if (box) { box.hidden = t.value !== 'custom'; if (t.value === 'custom') box.querySelector('input').focus(); } }
   if (t.name === 'meals' && t.closest('#pform')) { const box = $('#mealTimes'); if (box) box.innerHTML = mealTimesHTML(S.profile || {}, +t.value); }
 });
 document.addEventListener('submit', (e) => {

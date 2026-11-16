@@ -1,5 +1,5 @@
 // Service worker: guarda la app en el teléfono para que funcione sin internet.
-const CACHE = 'fit-v3';
+const CACHE = 'fit-v4';
 const ASSETS = ['./', 'index.html', 'styles.css', 'data.js', 'ai.js', 'extras.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png'];
 
 self.addEventListener('install', (e) => {

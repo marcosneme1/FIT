@@ -13,6 +13,18 @@ const store = {
 };
 const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: [], ai: null, aiPlan: null, aiRecipes: [], chat: [], menuSource: 'fit', swaps: {}, log: {}, customFoods: {} });
 let S = Object.assign(FRESH(), store.load());
+// Borrador del formulario de perfil: se guarda mientras se escribe, para no perder nada si la app se cierra o se actualiza.
+// Versión de la app: al cambiar, se avisa que hay novedades y se invita a revisar el perfil (con los datos ya cargados).
+const APP_VERSION = '4';
+const APP_NEWS = 'Novedades: podés escribir una comida especial que no esté en la lista (punto 7 del perfil) y el formulario se guarda solo mientras lo completás.';
+const DRAFT_KEY = 'fit.draft';
+const draft = {
+  load() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch (e) { return null; } },
+  save(P) { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(P)); } catch (e) { /* sin almacenamiento */ } },
+  clear() { try { localStorage.removeItem(DRAFT_KEY); } catch (e) { /* sin almacenamiento */ } },
+};
+// Pide al navegador que no borre los datos de Fit si el teléfono se queda sin espacio.
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) { /* no soportado */ }
 Object.assign(FOODS, S.customFoods || {});
 
 // ---------------- Utilidades ----------------
@@ -132,8 +144,9 @@ function calc(P) {
   // (se recortan carbohidratos y grasas, la proteína no se toca), para que el promedio semanal dé el objetivo.
   let excess = 0, regular = 0; const sp = P.specials || {};
   for (let d = 0; d < 7; d++) for (const s of slots) {
-    const r = RECIPES.find((x) => x.id === sp[`${d}-${s.key}`]);
-    if (r && !r.free) excess += nutr(r.ing).k - s.k; else if (!r) regular += s.k;
+    const key = `${d}-${s.key}`;
+    const r = sp[key] === 'custom' ? customSpecial(key, P) : RECIPES.find((x) => x.id === sp[key]);
+    if (r && !r.free) excess += (r.custom ? r.kcal : nutr(r.ing).k) - s.k; else if (!r) regular += s.k;
   }
   const rawWf = regular ? 1 - excess / regular : 1;
   const wf = clamp(rawWf, 0.88, 1.05);
@@ -228,7 +241,7 @@ function genMenu(P, seed = Date.now() % 1e9) {
     const day = {};
     for (const s of slots) {
       const sp = (P.specials || {})[`${d}-${s.key}`];
-      if (sp) { day[s.key] = sp; continue; }
+      if (sp) { day[s.key] = sp === 'custom' ? `custom:${d}-${s.key}` : sp; continue; }
       if (s.key === 'almuerzo' && P.vianda && d > 0) {
         const prev = days[d - 1].cena; const pr = RECIPES.find((r) => r.id === prev);
         if (pr && pr.type === 'principal') { day[s.key] = prev; continue; }
@@ -247,10 +260,22 @@ function ensureMenu() {
   if (!S.menu || S.menu.slotKeys !== keys) { S.menu = genMenu(P); S.shop = {}; store.save(); }
 }
 
-const R = (id) => RECIPES.find((r) => r.id === id);
+// Comida especial escrita por la persona (no está en la lista de recetas).
+function customSpecial(key, P = S.profile) {
+  const c = ((P && P.specialsCustom) || {})[key]; if (!c) return null;
+  return {
+    id: 'custom:' + key, n: c.n || 'Comida especial', type: 'especial', tags: [], time: 0, fixed: true, custom: true, kcal: c.k || null, free: !c.k, ing: [],
+    steps: ['Comida especial que elegiste. Disfrutala.'],
+    tip: c.k ? `Se cuenta como ≈ ${c.k} kcal y el resto de la semana compensa. Es una estimación: si te pasás o te quedás corto/a, no pasa nada.`
+      : 'Sin calorías cargadas: se cuenta como una comida normal del plan. Si sabés cuántas calorías tiene más o menos, cargalas en Perfil → punto 7 para que el promedio semanal sea más preciso.',
+  };
+}
+const R = (id) => (typeof id === 'string' && id.startsWith('custom:') ? customSpecial(id.slice(7)) : RECIPES.find((r) => r.id === id));
 
 function mealNutr(rid, slot, ctx) {
   const r = R(rid); if (!r) return null;
+  // Comida escrita con calorías: macros estimados como una comida mixta típica (20 % proteína, 50 % carbos, 30 % grasa).
+  if (r.custom && r.kcal) return { k: r.kcal, p: (r.kcal * 0.2) / 4, c: (r.kcal * 0.5) / 4, f: (r.kcal * 0.3) / 9, custom: true };
   if (r.free) return { k: slot.k, p: slot.p, c: slot.c, f: slot.f, free: true };
   return sumLines(fitLines(r, slot, ctx));
 }
@@ -381,6 +406,8 @@ function viewPlan() {
     </div>
     <div class="minis"><span>Fibra ≥ ${X.fib} g</span><span>Agua ≈ ${String(X.water).replace('.', ',')} L</span><span>Proteína ${String(X.pkg).replace('.', ',')} g/kg</span></div>
   </section>
+  ${S.seenVersion !== APP_VERSION ? `<section class="card upd"><h3>Fit se actualizó</h3><p class="hint">Tus datos siguen guardados. ${esc(APP_NEWS)} Revisá tu perfil: el formulario se abre con todo lo que ya cargaste, así solo completás lo nuevo o cambiás lo que quieras.</p>
+    <div class="actions"><button data-x="seenupd" data-go="perfil">Revisar mi perfil</button><button class="ghost" data-x="seenupd">Listo</button></div></section>` : ''}
   ${aiPlanCard()}
   ${notes}
   <details class="card">
@@ -439,7 +466,7 @@ function viewMenu() {
       <header><h3>${esc(s.name)}</h3>${trainPill(s)}${r.type === 'especial' ? '<span class="pill sp">Especial</span>' : ''}${linkedPrev ? '<span class="pill">Vianda de anoche</span>' : ''}</header>
       <p class="rname"><a href="#" data-recipe="${r.id}" data-slot="${s.key}" data-day="${menuDay}">${esc(r.n)}</a>${nsw ? ` <small class="sw">· ${nsw} reemplazo${nsw > 1 ? 's' : ''}</small>` : ''}</p>
       ${linkedNext ? '<p class="hint">Cociná el doble: la otra mitad es la vianda de mañana.</p>' : ''}
-      ${n.free ? `<p class="hint">${esc(r.tip)}</p>` : `<div class="mrow"><b>${r0(n.k)} kcal</b><span class="p">P ${r0(n.p)}</span><span class="c">C ${r0(n.c)}</span><span class="f">G ${r0(n.f)}</span></div>`}
+      ${n.free ? `<p class="hint">${esc(r.tip)}</p>` : `<div class="mrow"><b>${n.custom ? '≈ ' : ''}${r0(n.k)} kcal</b><span class="p">P ${r0(n.p)}</span><span class="c">C ${r0(n.c)}</span><span class="f">G ${r0(n.f)}</span>${n.custom ? '<span class="muted">macros estimados</span>' : ''}</div>`}
       ${r.type === 'especial' ? '' : `<div class="actions"><button class="ghost" data-reroll="${s.key}">Cambiar</button></div>`}
     </section>`;
   }).join('');
@@ -584,12 +611,14 @@ function chart(data, key) {
 const SPECIAL_SLOTS = [['4-cena', 'Viernes cena'], ['5-almuerzo', 'Sábado almuerzo'], ['5-cena', 'Sábado cena'], ['6-almuerzo', 'Domingo almuerzo'], ['6-cena', 'Domingo cena']];
 
 function viewProfile(first) {
-  const P = S.profile || { sex: 'F', job: 'sentado', strDays: 3, strMin: 60, cardDays: 1, cardMin: 45, cardType: 'mixto', experience: 'nov', goals: [], priority: 'recomp', pace: 'moderado', meals: 4, breakfast: 'ambos', excluded: [], health: [], specials: {}, vianda: false };
+  const dr = draft.load();
+  const P = dr || S.profile || { sex: 'F', job: 'sentado', strDays: 3, strMin: 60, cardDays: 1, cardMin: 45, cardType: 'mixto', experience: 'nov', goals: [], priority: 'recomp', pace: 'moderado', meals: 4, breakfast: 'ambos', excluded: [], health: [], specials: {}, vianda: false };
   const opt = (name, val, txt, cur) => `<option value="${val}" ${String(cur) === String(val) ? 'selected' : ''}>${txt}</option>`;
   const chk = (name, val, txt, arr, type = 'checkbox') => `<label class="chip"><input type="${type}" name="${name}" value="${val}" ${(type === 'radio' ? String(arr) === String(val) : (arr || []).includes(val)) ? 'checked' : ''}><span>${txt}</span></label>`;
   const specials = RECIPES.filter((r) => r.type === 'especial');
   const foodsByG = Object.keys(GROUPS).map((g) => `<p class="glabel">${GROUPS[g]}</p><div class="chips wrap">${Object.entries(FOODS).filter(([, x]) => x.g === g).map(([id, x]) => chk('excluded', id, esc(x.n), P.excluded)).join('')}</div>`).join('');
   return `
+  ${dr ? `<div class="note ok">${first ? 'Recuperamos lo que habías completado.' : 'Recuperamos cambios que no habías guardado.'} Se guarda solo mientras escribís. <a href="#" data-x="discarddraft">${first ? 'Empezar de cero' : 'Descartar cambios'}</a></div>` : ''}
   ${first ? `<section class="card hero intro"><div class="logo">Fit</div><p>Tu plan nutricional con comida de acá. Completá el cuestionario (2–3 minutos) y Fit calcula tus calorías, macros, porciones, menú semanal y lista de compras.</p></section>` : '<h2 class="sec">Mi perfil</h2>'}
   <form id="pform">
     <section class="card"><h3>1 · Datos personales</h3>
@@ -647,7 +676,10 @@ function viewProfile(first) {
     </section>
     <section class="card"><h3>7 · Comidas especiales del finde</h3>
       <p class="hint">Las comidas que no querés resignar se incluyen en el menú en lugar de prohibirlas.</p>
-      <div class="grid2">${SPECIAL_SLOTS.map(([k, l]) => `<label>${l}<select name="sp_${k}"><option value="">— Plan normal —</option>${specials.map((r) => opt('', r.id, r.n.split('(')[0].split(':')[0].trim(), (P.specials || {})[k])).join('')}</select></label>`).join('')}</div>
+      <div class="grid2">${SPECIAL_SLOTS.map(([k, l]) => { const cur = (P.specials || {})[k]; const cu = (P.specialsCustom || {})[k] || {};
+        return `<div class="spslot"><label>${l}<select name="sp_${k}"><option value="">— Plan normal —</option>${specials.map((r) => opt('', r.id, r.n.split('(')[0].split(':')[0].trim(), cur)).join('')}<option value="custom" ${cur === 'custom' ? 'selected' : ''}>✏️ Otra (escribir)</option></select></label>
+        <div class="spc" data-for="${k}" ${cur === 'custom' ? '' : 'hidden'}><label>Comida<input name="spn_${k}" value="${esc(cu.n || '')}" placeholder="Ej.: sushi, lomito"></label><label>Calorías aprox. (opcional)<input type="number" name="spk_${k}" value="${cu.k || ''}" inputmode="numeric" placeholder="Ej.: 700"></label></div></div>`; }).join('')}</div>
+      <p class="hint">Si elegís "Otra", escribí la comida. Las calorías son opcionales, pero si las ponés (aunque sea aproximadas) el resto de la semana se ajusta para compensar.</p>
     </section>
     <section class="card"><h3>8 · Alimentos que NO comés</h3>
       <p class="hint">Tocá los que quieras excluir; no van a aparecer en recetas, menú ni intercambios.</p>
@@ -678,22 +710,23 @@ function viewProfile(first) {
   </section>`}`;
 }
 
-function bindProfile(first) {
-  const f = $('#pform');
-  f.onsubmit = (e) => {
-    e.preventDefault();
+function readProfileForm(f) {
     const fd = new FormData(f);
     const num = (k) => (fd.get(k) === '' || fd.get(k) == null ? null : +fd.get(k));
-    const specials = {};
-    SPECIAL_SLOTS.forEach(([k]) => { const v = fd.get('sp_' + k); if (v) specials[k] = v; });
-    const P = {
+    const specials = {}; const specialsCustom = {};
+    SPECIAL_SLOTS.forEach(([k]) => {
+      const v = fd.get('sp_' + k); if (!v) return;
+      specials[k] = v;
+      if (v === 'custom') specialsCustom[k] = { n: (fd.get('spn_' + k) || '').trim() || 'Comida especial', k: num('spk_' + k) || null };
+    });
+    return {
       name: (fd.get('name') || '').trim(), sex: fd.get('sex'), age: num('age'), height: num('height'), weight: num('weight'),
       waist: num('waist'), neck: num('neck'), hip: num('hip'), bfKnown: num('bfKnown'),
       job: fd.get('job'), strDays: num('strDays') || 0, strMin: num('strMin') || 0, cardDays: num('cardDays') || 0, cardMin: num('cardMin') || 0,
       cardType: fd.get('cardType'), experience: fd.get('experience'),
       goals: fd.getAll('goals'), priority: fd.get('priority') || 'recomp', pace: fd.get('pace') || 'moderado',
       health: fd.getAll('health'), meals: num('meals') || 4, breakfast: fd.get('breakfast'), vianda: fd.get('vianda') === 'on',
-      specials, excluded: fd.getAll('excluded'),
+      specials, specialsCustom, excluded: fd.getAll('excluded'),
       likes: (fd.get('likes') || '').trim(), dislikes: (fd.get('dislikes') || '').trim(), sacred: (fd.get('sacred') || '').trim(),
       schedule: (fd.get('schedule') || '').trim(), typical: (fd.get('typical') || '').trim(), city: (fd.get('city') || '').trim(),
       notes: (fd.get('notes') || '').trim(), budget: fd.get('budget') || '',
@@ -701,13 +734,25 @@ function bindProfile(first) {
       trainDays: fd.getAll('trainDays').map(Number).sort(), trainTime: fd.get('trainTime') || '',
       mealTimes: Object.fromEntries([...fd.entries()].filter(([k, v]) => k.startsWith('mt_') && v).map(([k, v]) => [k.slice(3), v])),
     };
+}
+
+function bindProfile(first) {
+  const f = $('#pform');
+  let tmr = null;
+  const saveDraft = () => { clearTimeout(tmr); tmr = setTimeout(() => draft.save(readProfileForm(f)), 300); };
+  f.addEventListener('input', saveDraft);
+  f.addEventListener('change', saveDraft);
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    clearTimeout(tmr);
+    const P = readProfileForm(f);
     if (!P.goals.length) P.goals = ['mantener'];
     const old = S.profile;
     S.profile = P;
-    const menuRelevant = !old || JSON.stringify([old.meals, old.breakfast, old.vianda, old.specials, old.excluded]) !== JSON.stringify([P.meals, P.breakfast, P.vianda, P.specials, P.excluded]);
+    const menuRelevant = !old || JSON.stringify([old.meals, old.breakfast, old.vianda, old.specials, old.specialsCustom, old.excluded]) !== JSON.stringify([P.meals, P.breakfast, P.vianda, P.specials, P.specialsCustom, P.excluded]);
     if (menuRelevant) { S.menu = genMenu(P); S.shop = {}; }
     if (first || !S.progress.length) S.progress.push({ date: todayISO(), weight: P.weight, waist: P.waist, neck: P.neck, hip: P.hip });
-    store.save();
+    S.seenVersion = APP_VERSION; store.save(); draft.clear();
     TAB = 'plan'; render(); toast(first ? '¡Plan listo!' : 'Perfil guardado');
   };
 }

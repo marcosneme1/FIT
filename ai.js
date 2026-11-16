@@ -103,7 +103,7 @@ Reglas:
 function aiProfileText() {
   const P = S.profile; const X = calc(P);
   const ex = (P.excluded || []).map((id) => FOODS[id] && FOODS[id].n).filter(Boolean);
-  const sp = Object.entries(P.specials || {}).map(([k, id]) => { const [d, slot] = k.split('-'); const r = RECIPES.find((x) => x.id === id); return `${DAYS[+d]} ${slot}: ${r ? r.n : id}`; });
+  const sp = Object.entries(P.specials || {}).map(([k, id]) => { const [d, slot] = k.split('-'); const r = id === 'custom' ? customSpecial(k, P) : RECIPES.find((x) => x.id === id); return `${DAYS[+d]} ${slot}: ${r ? r.n + (r.custom && r.kcal ? ` (≈ ${r.kcal} kcal)` : '') : id}`; });
   const lines = [
     'PERFIL',
     `- Sexo: ${P.sex === 'M' ? 'masculino' : 'femenino'}; edad ${P.age}; altura ${P.height} cm; peso ${P.weight} kg`,
