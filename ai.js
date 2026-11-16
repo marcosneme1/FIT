@@ -125,8 +125,17 @@ function aiProfileText() {
   lines.push('', 'OBJETIVOS CALCULADOS (no los cambies)',
     `- Promedio diario: ${X.kcal} kcal; proteínas ${X.p} g; carbohidratos ${X.c} g; grasas ${X.f} g; fibra ≥ ${X.fib} g; agua ≈ ${X.water} L`,
     `- Gasto estimado ${Math.round(X.tdee)} kcal; ajuste ${Math.round(X.adj * 100)} %`,
-    '- Objetivo por comida (días normales; ya compensan las comidas especiales):',
-    ...X.slots.map((s) => `  · ${s.key} (${s.name}): ${Math.round(s.k)} kcal, P ${Math.round(s.p)} g, C ${Math.round(s.c)} g, G ${Math.round(s.f)} g`));
+  );
+  const fmt = (sl) => sl.map((s) => `  · ${s.key} (${s.name}, ${mealTime(P, s.key)}${s.pre ? ', pre-entreno' : s.post ? ', post-entreno' : ''}): ${Math.round(s.k)} kcal, P ${Math.round(s.p)} g, C ${Math.round(s.c)} g, G ${Math.round(s.f)} g`);
+  const td = P.trainDays || [];
+  if (td.length && td.length < 7) {
+    const rest = [0, 1, 2, 3, 4, 5, 6].find((i) => !td.includes(i));
+    lines.push(`- Entrena: ${td.map((i) => DAYS[i]).join(', ')}${P.trainTime ? ' a las ' + P.trainTime : ''}. Esos días llevan más carbohidratos (sobre todo antes y después de entrenar) y los de descanso menos; proteína y grasas iguales. Las metas ya compensan las comidas especiales.`,
+      '- Objetivo por comida en DÍA DE ENTRENAMIENTO:', ...fmt(daySlots(X, P, td[0])),
+      '- Objetivo por comida en DÍA DE DESCANSO:', ...fmt(daySlots(X, P, rest)));
+  } else {
+    lines.push('- Objetivo por comida (ya compensan las comidas especiales):', ...fmt(daySlots(X, P, 0)));
+  }
   return lines.join('\n');
 }
 
@@ -212,7 +221,7 @@ async function aiBuildPlan() {
 
 Armá el menú para estos días: ${names.join(', ')}.
 - Cada día lleva una receta por comida, con estas claves y en este orden: ${keys.join(', ')}.
-- Cada comida tiene que quedar cerca (±10 %) de su objetivo de kcal y macros.
+- Cada comida tiene que quedar cerca (±10 %) de su objetivo de kcal y macros${(P.trainDays || []).length && P.trainDays.length < 7 ? ` (usá los objetivos de DÍA DE ENTRENAMIENTO para ${P.trainDays.map((i) => DAYS[i]).join(', ')} y los de DÍA DE DESCANSO para el resto)` : ''}.
 ${P.vianda ? '- Vianda: el almuerzo de cada día es la misma receta que la cena del día anterior, con la porción del almuerzo (salvo que esa cena sea una comida especial).\n' : ''}- Comidas especiales fijas: incluilas con ese plato y una porción razonable (no hace falta que cumplan el objetivo; ya está compensado). Si es "Comida libre", poné nombre "Comida libre", ingredientes vacíos y un consejo en preparación.
 - Variá las proteínas (vaca, pollo, cerdo, pescado, huevo, legumbres) y las cocciones. No repitas un mismo plato principal más de 2 veces en la semana, salvo las viandas.
 - Preparación: de 2 a 5 pasos cortos. Medida casera: por ejemplo "1 unidad", "2 cucharadas", "1 taza".
@@ -246,7 +255,7 @@ Escribí la explicación de su plan como en una devolución de consulta:
 }
 
 async function aiRemeal(d, key) {
-  const P = S.profile; const X = calc(P); const slot = X.slots.find((s) => s.key === key); const day = S.aiPlan.dias[d];
+  const P = S.profile; const X = calc(P); const slot = daySlots(X, P, d).find((s) => s.key === key); const day = S.aiPlan.dias[d];
   const cur = day.comidas.find((m) => m.comida === key);
   const signal = busy('Buscando otra opción…');
   try {
@@ -256,7 +265,7 @@ async function aiRemeal(d, key) {
 
 Proponé UNA receta distinta para el ${slot.name.toLowerCase()} del ${DAYS[d]} (clave "${key}"). Objetivo: ${Math.round(slot.k)} kcal, P ${Math.round(slot.p)} g, C ${Math.round(slot.c)} g, G ${Math.round(slot.f)} g (±10 %).${cur ? ` Tiene que ser distinta de "${cur.nombre}".` : ''} Otros platos de la semana: ${S.aiPlan.dias.flatMap((x) => x.comidas.map((c) => c.nombre)).join('; ')}.`),
     });
-    m.comida = key;
+    m.comida = key; delete S.swaps[ctxKey(d, key, 'ia')];
     const i = day.comidas.findIndex((x) => x.comida === key);
     if (i >= 0) day.comidas[i] = m; else day.comidas.push(m);
     if (P.vianda && key === 'cena' && d < 6) { const nx = S.aiPlan.dias[d + 1].comidas; const j = nx.findIndex((x) => x.comida === 'almuerzo'); if (j >= 0 && cur && nx[j].nombre === cur.nombre) toast('Ojo: el almuerzo de mañana era la vianda de esta cena'); }
@@ -268,7 +277,7 @@ async function aiFridge() {
   const P = S.profile; const X = calc(P);
   const have = ($('#aiFridge') || {}).value?.trim(); const key = ($('#aiFridgeSlot') || {}).value;
   if (!have) { toast('Contá qué tenés'); return; }
-  const slot = X.slots.find((s) => s.key === key) || X.slots[0];
+  const tsl = daySlots(X, P, todayIdx()); const slot = tsl.find((s) => s.key === key) || tsl[0];
   const signal = busy('Pensando una receta…');
   try {
     const m = await gemGenerate({
@@ -280,7 +289,7 @@ Armá UNA receta para mi ${slot.name.toLowerCase()} usando principalmente eso. P
     });
     m.comida = slot.key; m.id = 'ia' + Date.now();
     S.aiRecipes = [m].concat(S.aiRecipes || []).slice(0, 30);
-    store.save(); idle(); render(); openAIMeal(m);
+    store.save(); idle(); render(); openAIMeal(m, null);
   } catch (e) { aiFail(e); }
 }
 
@@ -338,42 +347,30 @@ function viewMenuAI() {
   const P = S.profile; const X = calc(P); const A = S.aiPlan;
   const d = Math.min(menuDay, A.dias.length - 1); const day = A.dias[d];
   const tot = { k: 0, p: 0, c: 0, f: 0 };
-  const cards = X.slots.map((s) => {
+  const cards = daySlots(X, P, d).map((s) => {
     const m = day.comidas.find((x) => x.comida === s.key);
     if (!m) return `<section class="card meal"><header><h3>${esc(s.name)}</h3></header><p class="hint">Sin receta.</p><div class="actions"><button class="ghost" data-ai="remeal" data-d="${d}" data-k="${s.key}">Generar con IA</button></div></section>`;
-    const n = mealTotals(m); const free = !m.ingredientes || !m.ingredientes.length;
+    const ctx = ctxKey(d, s.key, 'ia'); const nsw = Object.keys(S.swaps[ctx] || {}).length;
+    const n = sumLines(aiLines(m, ctx)); const free = !m.ingredientes || !m.ingredientes.length;
     if (free) { tot.k += s.k; tot.p += s.p; tot.c += s.c; tot.f += s.f; } else { tot.k += n.k; tot.p += n.p; tot.c += n.c; tot.f += n.f; }
-    return `<section class="card meal"><header><h3>${esc(s.name)}</h3></header>
-      <p class="rname"><a href="#" data-ai="meal" data-d="${d}" data-k="${s.key}">${esc(m.nombre)}</a></p>
+    return `<section class="card meal"><header><h3>${esc(s.name)}</h3>${trainPill(s)}</header>
+      <p class="rname"><a href="#" data-ai="meal" data-d="${d}" data-k="${s.key}">${esc(m.nombre)}</a>${nsw ? ` <small class="sw">· ${nsw} reemplazo${nsw > 1 ? 's' : ''}</small>` : ''}</p>
       ${free ? `<p class="hint">${esc((m.preparacion || []).join(' '))}</p>` : `<div class="mrow"><b>${Math.round(n.k)} kcal</b><span class="p">P ${Math.round(n.p)}</span><span class="c">C ${Math.round(n.c)}</span><span class="f">G ${Math.round(n.f)}</span></div>`}
       <div class="actions"><button class="ghost" data-ai="remeal" data-d="${d}" data-k="${s.key}">Otra opción con IA</button></div></section>`;
   }).join('');
   let wk = 0;
-  A.dias.forEach((dd) => X.slots.forEach((s) => { const m = dd.comidas.find((x) => x.comida === s.key); const n = m && m.ingredientes && m.ingredientes.length ? mealTotals(m).k : s.k; wk += n; }));
-  const avg = wk / A.dias.length; const dev = (tot.k - X.kcal) / X.kcal;
+  A.dias.forEach((dd, di) => daySlots(X, P, di).forEach((s) => { const m = dd.comidas.find((x) => x.comida === s.key); const n = m && m.ingredientes && m.ingredientes.length ? sumLines(aiLines(m, ctxKey(di, s.key, 'ia'))).k : s.k; wk += n; }));
+  const TD = sumSlots(daySlots(X, P, d)); const avg = wk / A.dias.length; const dev = (tot.k - TD.k) / TD.k;
   return `${aiMenuToggle()}
   <div class="days">${DAYS_S.map((x, i) => `<button class="${i === d ? 'on' : ''}" data-day="${i}">${x}</button>`).join('')}</div>
   <h2 class="sec">${DAYS[d]}</h2>${cards}
   <section class="card">
     <div class="mrow"><b>Total del día: ${Math.round(tot.k)} kcal</b><span class="p">P ${Math.round(tot.p)}</span><span class="c">C ${Math.round(tot.c)}</span><span class="f">G ${Math.round(tot.f)}</span></div>
-    <p class="hint">Objetivo: ${X.kcal} kcal · ${X.p} g de proteína. Promedio semanal del menú: <b>${Math.round(avg)} kcal/día</b>.</p>
+    <p class="hint">Objetivo del día: ${Math.round(TD.k)} kcal · ${Math.round(TD.p)} g de proteína. Promedio semanal del menú: <b>${Math.round(avg)} kcal/día</b>.</p>
     ${Math.abs(dev) > 0.12 ? `<div class="note warn">Este día se desvía ${dev > 0 ? '+' : ''}${Math.round(dev * 100)} % del objetivo${day.comidas.some((m) => /libre/i.test(m.nombre)) ? ' (incluye una comida especial o libre)' : ''}. Podés pedir otra opción para alguna comida.</div>` : ''}
     <p class="hint">Los valores nutricionales los informa la IA por ingrediente y Fit los suma: son aproximados y pueden tener errores.</p>
   </section>
   <div class="actions center"><button class="ghost" data-ai="start">Rehacer plan y menú con IA</button></div>`;
-}
-
-function openAIMeal(m) {
-  const n = mealTotals(m);
-  $('#modalBody').innerHTML = `<h2>${esc(m.nombre)}</h2>
-    ${m.ingredientes && m.ingredientes.length ? `<div class="mrow"><b>${Math.round(n.k)} kcal</b><span class="p">P ${Math.round(n.p)} g</span><span class="c">C ${Math.round(n.c)} g</span><span class="f">G ${Math.round(n.f)} g</span>${m.tiempo_min ? `<span class="muted">${m.tiempo_min} min</span>` : ''}</div>
-    <h3>Ingredientes <small>(1 porción, pesos en crudo)</small></h3>
-    <ul class="opts">${m.ingredientes.map((i) => `<li><span>${esc(i.nombre)}</span><b>${Math.round(i.gramos)} g</b><small>${i.medida_casera ? esc(i.medida_casera) + ' · ' : ''}${Math.round(i.kcal)} kcal · P ${(+i.proteinas).toFixed(0)} · C ${(+i.carbohidratos).toFixed(0)} · G ${(+i.grasas).toFixed(0)}</small></li>`).join('')}</ul>` : ''}
-    <h3>Preparación</h3><ol class="steps">${(m.preparacion || []).map((s) => `<li>${esc(s)}</li>`).join('')}</ol>
-    ${m.consejo ? `<div class="note info">${esc(m.consejo)}</div>` : ''}
-    <p class="hint">Receta generada por IA: revisá que los ingredientes te sirvan. Los valores nutricionales son aproximados.</p>`;
-  $('#modalBody').onclick = null;
-  $('#modal').showModal();
 }
 
 function aiFridgeCard() {
@@ -393,9 +390,9 @@ function aiSavedRecipes() {
 
 function aiShopItems() {
   const tot = {};
-  S.aiPlan.dias.forEach((d) => d.comidas.forEach((m) => (m.ingredientes || []).forEach((i) => {
-    const k = String(i.nombre || '').trim().toLowerCase(); if (!k) return;
-    tot[k] = tot[k] || { n: String(i.nombre).trim(), g: 0 }; tot[k].g += +i.gramos || 0;
+  S.aiPlan.dias.forEach((d, di) => d.comidas.forEach((m) => aiLines(m, ctxKey(di, m.comida, 'ia')).forEach((l) => {
+    const k = l.n.trim().toLowerCase(); if (!k) return;
+    tot[k] = tot[k] || { n: l.n.trim(), g: 0 }; tot[k].g += l.g || 0;
   })));
   return Object.entries(tot).sort((a, b) => a[1].n.localeCompare(b[1].n));
 }
@@ -442,9 +439,9 @@ function aiAction(t) {
   if (a === 'start') return aiStart();
   if (a === 'src') { S.menuSource = t.dataset.src; store.save(); render(); return; }
   if (a === 'remeal') return aiRemeal(+t.dataset.d, t.dataset.k);
-  if (a === 'meal') { const m = S.aiPlan.dias[+t.dataset.d].comidas.find((x) => x.comida === t.dataset.k); if (m) openAIMeal(m); return; }
+  if (a === 'meal') { const m = S.aiPlan.dias[+t.dataset.d].comidas.find((x) => x.comida === t.dataset.k); if (m) openAIMeal(m, ctxKey(+t.dataset.d, t.dataset.k, 'ia')); return; }
   if (a === 'fridge') return aiFridge();
-  if (a === 'saved') { openAIMeal(S.aiRecipes[+t.dataset.i]); return; }
+  if (a === 'saved') { openAIMeal(S.aiRecipes[+t.dataset.i], null); return; }
   if (a === 'delsaved') { S.aiRecipes.splice(+t.dataset.i, 1); store.save(); render(); return; }
   if (a === 'clearchat') { if (confirm('¿Borrar la conversación?')) { S.chat = []; store.save(); render(); } }
 }

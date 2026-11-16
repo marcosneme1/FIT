@@ -10,6 +10,11 @@ Plan nutricional personalizado con comida argentina. Es una PWA: se instala desd
 - Compensa en la semana las comidas especiales del finde (pizza, asado, empanadas).
 - Lista de compras automática, compartible.
 - Registro de peso y medidas con gráficos.
+- **Entrenamiento:** más carbohidratos los días de entrenamiento (antes y después de entrenar) y menos los de descanso; promedio semanal y proteína iguales.
+- **Calculadora:** cuántos gramos de cada alimento cubren la proteína, los carbohidratos o la grasa de cada comida, y conversor entre alimentos.
+- **Reemplazos:** en cualquier receta, cambiar un ingrediente por otro (ej.: carne → pollo) con la cantidad equivalente; se refleja en el menú, el diario y las compras.
+- **Diario:** tildar las comidas del plan, sumar otros alimentos y ver lo consumido vs. el objetivo del día.
+- **Escáner de código de barras** (Chrome para Android) con datos de Open Food Facts, o carga manual desde la etiqueta.
 - Backup exportable e importable.
 - **IA opcional (Google Gemini):** preguntas de seguimiento, plan explicado, menú semanal con recetas, recetas con lo que tengas en la heladera y chat. Cada persona usa su propia clave gratuita (aistudio.google.com/apikey), que queda guardada solo en su teléfono. Las calorías y los macros siempre los calculan las fórmulas; la IA arma el contenido respetándolos. La app no fija un modelo: lista los disponibles con la clave y elige el Flash más nuevo.
 

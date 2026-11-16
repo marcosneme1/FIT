@@ -11,8 +11,9 @@ const store = {
     try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* sin almacenamiento disponible */ }
   },
 };
-const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: [], ai: null, aiPlan: null, aiRecipes: [], chat: [], menuSource: 'fit' });
+const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: [], ai: null, aiPlan: null, aiRecipes: [], chat: [], menuSource: 'fit', swaps: {}, log: {}, customFoods: {} });
 let S = Object.assign(FRESH(), store.load());
+Object.assign(FOODS, S.customFoods || {});
 
 // ---------------- Utilidades ----------------
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -248,10 +249,10 @@ function ensureMenu() {
 
 const R = (id) => RECIPES.find((r) => r.id === id);
 
-function mealNutr(rid, slot) {
+function mealNutr(rid, slot, ctx) {
   const r = R(rid); if (!r) return null;
   if (r.free) return { k: slot.k, p: slot.p, c: slot.c, f: slot.f, free: true };
-  return nutr(scaleRecipe(r, slot));
+  return sumLines(fitLines(r, slot, ctx));
 }
 
 // ---------------- Render general ----------------
@@ -267,8 +268,9 @@ function render() {
   if (!S.profile) { nav.hidden = true; $('#btnProfile').hidden = true; view.innerHTML = viewProfile(true); bindProfile(true); return; }
   nav.hidden = false; $('#btnProfile').hidden = false;
   ensureMenu();
-  document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === TAB));
-  const V = { plan: viewPlan, menu: viewMenu, recetas: viewRecipes, compras: viewShop, progreso: viewProgress, chat: viewChat, perfil: () => viewProfile(false) };
+  const navTab = { recetas: 'mas', chat: 'mas', calc: 'mas', perfil: 'mas' }[TAB] || TAB;
+  document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === navTab));
+  const V = { plan: viewPlan, diario: viewDiario, menu: viewMenu, recetas: viewRecipes, compras: viewShop, progreso: viewProgress, chat: viewChat, calc: viewCalc, mas: viewMas, perfil: () => viewProfile(false) };
   view.innerHTML = (V[TAB] || viewPlan)();
   if (TAB === 'perfil') bindProfile(false);
   if (render.last !== TAB) window.scrollTo(0, 0);
@@ -326,11 +328,18 @@ function exchanges(slot) {
   return `<div class="xch"><span><b>${h(slot.p / 20)}</b> porc. proteína</span><span><b>${h(slot.c / 30)}</b> porc. carbos</span><span><b>${h(slot.f / 10)}</b> porc. grasa</span></div>`;
 }
 
+let planType = null;
 function viewPlan() {
   const P = S.profile; const X = calc(P);
-  const k = X.kcal;
+  const td = P.trainDays || []; const cycling = td.length > 0 && td.length < 7;
+  if (!planType) planType = isTrainDay(P, todayIdx()) ? 'train' : 'rest';
+  let pd = todayIdx();
+  if (cycling && planType === 'train' && !td.includes(pd)) pd = td[0];
+  if (cycling && planType === 'rest' && td.includes(pd)) pd = [0, 1, 2, 3, 4, 5, 6].find((i) => !td.includes(i));
+  const slots = daySlots(X, P, pd); const T = sumSlots(slots);
+  const k = Math.round(T.k / 10) * 10; const Tp = r0(T.p), Tc = r0(T.c), Tf = r0(T.f);
   const notes = X.notes.map((n) => `<div class="note ${n.t}">${esc(n.m)}</div>`).join('');
-  const slotsHTML = X.slots.map((s) => {
+  const slotsHTML = slots.map((s) => {
     let body = '';
     if (s.type === 'principal') {
       const pl = plate(s, P);
@@ -352,20 +361,23 @@ function viewPlan() {
       body = `${exchanges(s)}<p class="hint">Ideas: ${ideas.map((r) => `<a href="#" data-recipe="${r.id}" data-slot="${s.key}">${esc(r.n)}</a>`).join(' · ')}</p>`;
     }
     return `<section class="card meal">
-      <header><h3>${esc(s.name)}</h3><span class="pill">${s.pct} %</span></header>
+      <header><h3>${esc(s.name)}</h3><span class="pill">${esc(mealTime(P, s.key))}</span>${trainPill(s)}</header>
       <div class="mrow"><b>${r0(s.k)} kcal</b><span class="p">P ${r0(s.p)} g</span><span class="c">C ${r0(s.c)} g</span><span class="f">G ${r0(s.f)} g</span></div>
+      ${trainTip(s) ? `<p class="hint">${trainTip(s)}</p>` : ''}
       ${body}</section>`;
   }).join('');
 
   return `
+  ${cycling ? `<div class="seg"><button class="${planType === 'train' ? 'on' : ''}" data-x="ptype" data-v="train">Día de entrenamiento</button><button class="${planType === 'rest' ? 'on' : ''}" data-x="ptype" data-v="rest">Día de descanso</button></div>` : ''}
   <section class="card hero">
     <p class="eyebrow">${esc(X.modeTxt)}${P.name ? ' · ' + esc(P.name) : ''}</p>
     <div class="big">${k.toLocaleString('es-AR')}<small> kcal/día</small></div>
-    ${macroBar(X.p, X.c, X.f)}
+    ${cycling ? `<p class="hint" style="margin:-6px 0 10px">${planType === 'train' ? 'Día de entrenamiento' : 'Día de descanso'} · promedio semanal ${X.kcal.toLocaleString('es-AR')} kcal</p>` : ''}
+    ${macroBar(Tp, Tc, Tf)}
     <div class="macros">
-      <div class="p"><b>${X.p} g</b><span>Proteínas<br>${pctK(X.p, 4, k)} % kcal</span></div>
-      <div class="c"><b>${X.c} g</b><span>Carbos<br>${pctK(X.c, 4, k)} % kcal</span></div>
-      <div class="f"><b>${X.f} g</b><span>Grasas<br>${pctK(X.f, 9, k)} % kcal</span></div>
+      <div class="p"><b>${Tp} g</b><span>Proteínas<br>${pctK(Tp, 4, k)} % kcal</span></div>
+      <div class="c"><b>${Tc} g</b><span>Carbos<br>${pctK(Tc, 4, k)} % kcal</span></div>
+      <div class="f"><b>${Tf} g</b><span>Grasas<br>${pctK(Tf, 9, k)} % kcal</span></div>
     </div>
     <div class="minis"><span>Fibra ≥ ${X.fib} g</span><span>Agua ≈ ${String(X.water).replace('.', ',')} L</span><span>Proteína ${String(X.pkg).replace('.', ',')} g/kg</span></div>
   </section>
@@ -387,6 +399,7 @@ function viewPlan() {
     <p class="hint">Las fórmulas estiman; el gasto real puede variar ±10 %. Pesate 2–3 veces por semana en ayunas y mirá el promedio: si en 3–4 semanas no se mueve en la dirección buscada, ajustá ±100–150 kcal.</p>
   </details>
   <h2 class="sec">Tus comidas</h2>
+  <div class="actions"><button class="ghost" data-tab="calc">⚖️ ¿Cuánto puedo comer de cada alimento?</button></div>
   ${slotsHTML}
   <h2 class="sec">Intercambios</h2>
   ${viewExchanges(P)}
@@ -413,17 +426,18 @@ function viewExchanges(P) {
 function viewMenu() {
   if (S.aiPlan && S.menuSource === 'ia') return viewMenuAI();
   const P = S.profile; const X = calc(P); const M = S.menu;
-  const day = M.days[menuDay];
+  const day = M.days[menuDay]; const slotsD = daySlots(X, P, menuDay); const TD = sumSlots(slotsD);
   let tot = { k: 0, p: 0, c: 0, f: 0 }; let hasFree = false;
-  const cards = X.slots.map((s) => {
+  const cards = slotsD.map((s) => {
     const rid = day[s.key]; const r = R(rid); if (!r) return '';
-    const n = mealNutr(rid, s); if (n.free) hasFree = true;
+    const ctx = ctxKey(menuDay, s.key, 'fit'); const nsw = Object.keys(S.swaps[ctx] || {}).length;
+    const n = mealNutr(rid, s, ctx); if (n.free) hasFree = true;
     tot.k += n.k; tot.p += n.p; tot.c += n.c; tot.f += n.f;
     const linkedNext = P.vianda && s.key === 'cena' && menuDay < 6 && M.days[menuDay + 1].almuerzo === rid && r.type === 'principal';
     const linkedPrev = P.vianda && s.key === 'almuerzo' && menuDay > 0 && M.days[menuDay - 1].cena === rid && r.type === 'principal';
     return `<section class="card meal">
-      <header><h3>${esc(s.name)}</h3>${r.type === 'especial' ? '<span class="pill sp">Especial</span>' : ''}${linkedPrev ? '<span class="pill">Vianda de anoche</span>' : ''}</header>
-      <p class="rname"><a href="#" data-recipe="${r.id}" data-slot="${s.key}">${esc(r.n)}</a></p>
+      <header><h3>${esc(s.name)}</h3>${trainPill(s)}${r.type === 'especial' ? '<span class="pill sp">Especial</span>' : ''}${linkedPrev ? '<span class="pill">Vianda de anoche</span>' : ''}</header>
+      <p class="rname"><a href="#" data-recipe="${r.id}" data-slot="${s.key}" data-day="${menuDay}">${esc(r.n)}</a>${nsw ? ` <small class="sw">· ${nsw} reemplazo${nsw > 1 ? 's' : ''}</small>` : ''}</p>
       ${linkedNext ? '<p class="hint">Cociná el doble: la otra mitad es la vianda de mañana.</p>' : ''}
       ${n.free ? `<p class="hint">${esc(r.tip)}</p>` : `<div class="mrow"><b>${r0(n.k)} kcal</b><span class="p">P ${r0(n.p)}</span><span class="c">C ${r0(n.c)}</span><span class="f">G ${r0(n.f)}</span></div>`}
       ${r.type === 'especial' ? '' : `<div class="actions"><button class="ghost" data-reroll="${s.key}">Cambiar</button></div>`}
@@ -431,15 +445,16 @@ function viewMenu() {
   }).join('');
   // promedio semanal
   let wk = 0; let free = 0;
-  M.days.forEach((d) => X.slots.forEach((s) => { const n = mealNutr(d[s.key], s); if (n) { wk += n.k; if (n.free) free++; } }));
+  M.days.forEach((d, i) => daySlots(X, P, i).forEach((s) => { const n = mealNutr(d[s.key], s, ctxKey(i, s.key, 'fit')); if (n) { wk += n.k; if (n.free) free++; } }));
   const avg = wk / 7; const diff = avg - X.kcal;
   return `${aiMenuToggle()}
   <div class="days">${DAYS_S.map((d, i) => `<button class="${i === menuDay ? 'on' : ''}" data-day="${i}">${d}</button>`).join('')}</div>
-  <h2 class="sec">${DAYS[menuDay]}</h2>
+  <h2 class="sec">${DAYS[menuDay]}${isTrainDay(P, menuDay) ? ' <span class="pill tr">Entrenamiento</span>' : ''}</h2>
+  <p class="hint">Tocá una receta para ver ingredientes y reemplazar alguno (ej.: carne por pollo) con la cantidad equivalente.</p>
   ${cards}
   <section class="card">
     <div class="mrow"><b>Total del día: ${r0(tot.k)} kcal</b><span class="p">P ${r0(tot.p)}</span><span class="c">C ${r0(tot.c)}</span><span class="f">G ${r0(tot.f)}</span></div>
-    <p class="hint">Objetivo: ${X.kcal} kcal · ${X.p} g de proteína.${hasFree ? ' La comida libre se cuenta con el valor de esa comida del plan.' : ''}</p>
+    <p class="hint">Objetivo del día: ${r0(TD.k)} kcal · ${r0(TD.p)} g de proteína.${hasFree ? ' La comida libre se cuenta con el valor de esa comida del plan.' : ''}</p>
     <p class="hint">Promedio semanal: <b>${r0(avg)} kcal/día</b> (${diff >= 0 ? '+' : ''}${r0(diff)} respecto del objetivo)${free ? `. Incluye ${free} comida(s) libre(s) contada(s) como una comida normal: si se te van mucho, se nota en el promedio.` : '.'}</p>
   </section>
   <div class="actions center"><button data-newmenu>Generar otro menú semanal</button></div>`;
@@ -455,7 +470,8 @@ function viewRecipes() {
     .filter((r) => r.type === 'especial' || recipeAllowed(r, P, r.type))
     .filter((r) => !q || r.n.toLowerCase().includes(q) || r.ing.some(([id]) => FOODS[id].n.toLowerCase().includes(q)));
   const X = calc(P);
-  const slotFor = (r) => X.slots.find((s) => s.type === r.type) || X.slots.find((s) => s.key === 'cena');
+  const tSlots = daySlots(X, P, todayIdx());
+  const slotFor = (r) => tSlots.find((s) => s.type === r.type) || tSlots.find((s) => s.key === 'cena');
   const chips = `<div class="chips scroll">${Object.entries(F).map(([k, v]) => `<button class="chip ${recFilter === k ? 'on' : ''}" data-rf="${k}">${v}</button>`).join('')}</div>`;
   if (recFilter === 'ia') return `${aiFridgeCard()}${chips}${aiSavedRecipes()}`;
   return `${aiFridgeCard()}
@@ -472,38 +488,14 @@ function viewRecipes() {
   }).join('') : '<p class="hint center">No hay recetas para ese filtro.</p>'}`;
 }
 
-function openRecipe(id, slotKey) {
-  const P = S.profile; const X = calc(P); const r = R(id); if (!r) return;
-  const candidates = X.slots.filter((s) => s.type === r.type || (r.type === 'especial' && s.type === 'principal'));
-  let slot = X.slots.find((s) => s.key === slotKey) || candidates[0] || X.slots[0];
-  const draw = () => {
-    const ings = scaleRecipe(r, slot); const n = nutr(ings);
-    $('#modalBody').innerHTML = `
-      <h2>${esc(r.n)}</h2>
-      ${!r.fixed && candidates.length > 1 ? `<div class="chips">${candidates.map((s) => `<button class="chip ${s.key === slot.key ? 'on' : ''}" data-mslot="${s.key}">Para ${esc(s.name.toLowerCase())}</button>`).join('')}</div>` : ''}
-      ${r.free ? '' : `<div class="mrow"><b>${r0(n.k)} kcal</b><span class="p">P ${r0(n.p)} g</span><span class="c">C ${r0(n.c)} g</span><span class="f">G ${r0(n.f)} g</span>${r.time ? `<span class="muted">${r.time} min</span>` : ''}</div>`}
-      ${r.fixed && !r.free ? `<p class="hint">Porción fija. Tu ${esc(slot.name.toLowerCase())} del plan es de ${r0(slot.k)} kcal.</p>` : ''}
-      ${ings.length ? `<h3>Ingredientes <small>(1 porción, pesos en crudo)</small></h3>
-      <ul class="opts">${ings.map((i) => `<li><span>${esc(FOODS[i.id].n)}</span><b>${i.g} g</b>${household(i.id, i.g) ? `<small>${household(i.id, i.g)}</small>` : ''}</li>`).join('')}</ul>` : ''}
-      <h3>Preparación</h3><ol class="steps">${r.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>
-      ${r.tip ? `<div class="note info">${esc(r.tip)}</div>` : ''}
-      <p class="hint">Sal, especias, ajo, limón, vinagre, hierbas, café, té y mate amargo: libres.</p>`;
-  };
-  draw();
-  $('#modalBody').onclick = (e) => { const b = e.target.closest('[data-mslot]'); if (b) { slot = X.slots.find((s) => s.key === b.dataset.mslot); draw(); } };
-  $('#modal').showModal();
-}
-
 // ---------------- Vista: Compras ----------------
 function viewShop() {
   if (S.aiPlan && S.menuSource === 'ia') return viewShopAI();
   const P = S.profile; const X = calc(P); const M = S.menu;
   const tot = {};
-  M.days.forEach((d) => X.slots.forEach((s) => {
+  M.days.forEach((d, di) => daySlots(X, P, di).forEach((s) => {
     const r = R(d[s.key]); if (!r || r.free) return;
-    const linked = P.vianda && s.key === 'almuerzo' && r.type === 'principal' && M.days.indexOf(d) > 0 && M.days[M.days.indexOf(d) - 1].cena === r.id;
-    scaleRecipe(r, s).forEach((i) => { tot[i.id] = (tot[i.id] || 0) + i.g; });
-    void linked; // la vianda también se compra: es una porción más
+    fitLines(r, s, ctxKey(di, s.key, 'fit')).forEach((l) => { tot[l.id] = (tot[l.id] || 0) + l.g; });
   }));
   const byG = {};
   Object.entries(tot).forEach(([id, g]) => { const gr = FOODS[id].g; (byG[gr] = byG[gr] || []).push([id, g]); });
@@ -628,6 +620,10 @@ function viewProfile(first) {
         <label class="span2">Tipo de cardio / deporte<select name="cardType">${opt('', 'caminar', 'Caminata', P.cardType)}${opt('', 'mixto', 'Caminar/trotar', P.cardType)}${opt('', 'correr', 'Correr', P.cardType)}${opt('', 'bici', 'Bici / spinning', P.cardType)}${opt('', 'nadar', 'Natación', P.cardType)}${opt('', 'deporte', 'Fútbol, pádel, tenis, etc.', P.cardType)}</select></label>
         <label class="span2">Experiencia en fuerza<select name="experience">${opt('', 'nov', 'Menos de 6 meses', P.experience)}${opt('', 'int', '6 meses a 2 años', P.experience)}${opt('', 'adv', 'Más de 2 años', P.experience)}</select></label>
       </div>
+      <p class="glabel">¿Qué días entrenás? <small>(fuerza o cardio)</small></p>
+      <div class="chips wrap">${DAYS_S.map((dn, i) => chk('trainDays', String(i), dn, (P.trainDays || []).map(String))).join('')}</div>
+      <label style="margin-top:10px">¿A qué hora entrenás, en general?<input type="time" name="trainTime" value="${esc(P.trainTime || '')}"></label>
+      <p class="hint">Con esto Fit sube los carbohidratos en los días de entrenamiento (sobre todo antes y después) y los baja en los de descanso. El promedio semanal y la proteína no cambian.</p>
     </section>
     <section class="card"><h3>4 · Objetivos <small>(podés elegir varios)</small></h3>
       <div class="chips wrap">${Object.entries(GOALS).map(([k, v]) => chk('goals', k, v, P.goals)).join('')}</div>
@@ -645,6 +641,8 @@ function viewProfile(first) {
         <label>Comidas por día<select name="meals">${[3, 4, 5, 6].map((n) => opt('', n, n, P.meals)).join('')}</select></label>
         <label>Desayuno y merienda<select name="breakfast">${opt('', 'salado', 'Salado', P.breakfast)}${opt('', 'dulce', 'Dulce', P.breakfast)}${opt('', 'ambos', 'Ambos', P.breakfast)}</select></label>
       </div>
+      <p class="glabel">Horario de cada comida</p>
+      <div id="mealTimes">${mealTimesHTML(P, P.meals || 4)}</div>
       <label class="chip solo"><input type="checkbox" name="vianda" ${P.vianda ? 'checked' : ''}><span>Llevo vianda: la cena de hoy es el almuerzo de mañana</span></label>
     </section>
     <section class="card"><h3>7 · Comidas especiales del finde</h3>
@@ -700,6 +698,8 @@ function bindProfile(first) {
       schedule: (fd.get('schedule') || '').trim(), typical: (fd.get('typical') || '').trim(), city: (fd.get('city') || '').trim(),
       notes: (fd.get('notes') || '').trim(), budget: fd.get('budget') || '',
       aiAnswers: (S.profile && S.profile.aiAnswers) || [],
+      trainDays: fd.getAll('trainDays').map(Number).sort(), trainTime: fd.get('trainTime') || '',
+      mealTimes: Object.fromEntries([...fd.entries()].filter(([k, v]) => k.startsWith('mt_') && v).map(([k, v]) => [k.slice(3), v])),
     };
     if (!P.goals.length) P.goals = ['mantener'];
     const old = S.profile;
@@ -716,13 +716,14 @@ function bindProfile(first) {
 function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2200); }
 
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('button, a, [data-recipe]'); if (!t) return;
+  const t = e.target.closest('button, a, [data-recipe], [data-x]'); if (!t) return;
   const d = t.dataset;
   if (d.ai != null) { e.preventDefault(); aiAction(t); return; }
+  if (d.x != null) { e.preventDefault(); xAction(t); return; }
   if (t.id === 'busyCancel') { if (aiAbort) aiAbort.abort(); return; }
   if (d.tab) { TAB = d.tab; render(); return; }
   if (t.id === 'btnProfile') { TAB = 'perfil'; render(); return; }
-  if (d.recipe) { e.preventDefault(); openRecipe(d.recipe, d.slot); return; }
+  if (d.recipe) { e.preventDefault(); openRecipe(d.recipe, d.slot, d.day != null ? +d.day : null); return; }
   if (d.day != null) { menuDay = +d.day; render(); return; }
   if (d.reroll) {
     const P = S.profile; const s = calc(P).slots.find((x) => x.key === d.reroll);
@@ -775,7 +776,7 @@ document.addEventListener('change', (e) => {
   if (t.dataset.shop) { const k = `${S.menu.created}`; S.shop[k] = S.shop[k] || {}; S.shop[k][t.dataset.shop] = t.checked; store.save(); }
   if (t.dataset.import != null && t.files[0]) {
     t.files[0].text().then((txt) => {
-      try { const d = JSON.parse(txt); if (!d || typeof d !== 'object' || !('profile' in d)) throw 0; const keep = S.ai; S = Object.assign(FRESH(), d, { ai: keep }); store.save(); TAB = 'plan'; render(); toast('Backup importado'); }
+      try { const d = JSON.parse(txt); if (!d || typeof d !== 'object' || !('profile' in d)) throw 0; const keep = S.ai; S = Object.assign(FRESH(), d, { ai: keep }); Object.assign(FOODS, S.customFoods || {}); store.save(); TAB = 'plan'; render(); toast('Backup importado'); }
       catch (_) { toast('El archivo no es un backup válido'); }
     });
   }
