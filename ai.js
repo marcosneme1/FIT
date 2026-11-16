@@ -34,7 +34,7 @@ function friendlyError(status, msg) {
   if (status === 403) return 'La clave no tiene permiso para usar Gemini (403). Generá una nueva en aistudio.google.com/apikey.';
   if (status === 404) return 'El modelo elegido no está disponible. Elegí otro en Perfil → Inteligencia artificial.';
   if (status === 429) return 'Se alcanzó el límite de uso de tu clave (429). Esperá un minuto y probá de nuevo.';
-  if (status >= 500) return 'Gemini está con problemas en este momento. Probá de nuevo en un rato.';
+  if (status >= 500) return `Gemini no respondió (error ${status}${/overload|unavailable|high demand/i.test(msg) ? ': modelo saturado' : ''}). Probá de nuevo en unos minutos o elegí otro modelo en Más → Perfil → Inteligencia artificial. Detalle: ${String(msg).slice(0, 160)}`;
   return msg;
 }
 
@@ -56,19 +56,50 @@ function pickDefaultModel(list) {
   return list.slice().sort((a, b) => score(b.id) - score(a.id))[0]?.id || null;
 }
 
+const sleep = (ms, signal) => new Promise((res, rej) => {
+  const t = setTimeout(res, ms);
+  if (signal) signal.addEventListener('abort', () => { clearTimeout(t); rej(new DOMException('Cancelado', 'AbortError')); }, { once: true });
+});
+function rankedModels() {
+  const ver = (id) => { const m = id.match(/gemini-(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
+  const score = (id) => ver(id) * 10 + (/flash/.test(id) ? 3 : 0) - (/lite/.test(id) ? 2 : 0) - (/(preview|exp)/.test(id) ? 5 : 0) - (/pro/.test(id) ? 4 : 0);
+  return (S.ai.models || []).map((m) => m.id).sort((a, b) => score(b) - score(a));
+}
+// Llama a Gemini con reintentos: si el modelo está saturado (5xx) reintenta, y si sigue fallando
+// (o no existe, o se agotó su cupo) prueba con otros modelos de la lista.
+async function gemCall(body, signal) {
+  const order = [S.ai.model].concat(rankedModels().filter((id) => id !== S.ai.model)).slice(0, 3);
+  let lastErr;
+  for (const model of order) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const d = await gemFetch(`models/${model}:generateContent`, body, signal);
+        if (model !== S.ai.model) { const prev = S.ai.model; S.ai.model = model; store.save(); toast(`${prev} no respondía: se usó ${model}`); }
+        return d;
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+        lastErr = e;
+        if (e.status >= 500 && attempt < 2) { busyMsg(`Gemini está saturado, reintentando (${attempt + 2}/3)…`); await sleep(attempt ? 5000 : 2000, signal); continue; }
+        if (e.status >= 500 || e.status === 404 || e.status === 429) { busyMsg('Probando con otro modelo de Gemini…'); break; }
+        throw e;
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function gemGenerate({ system, contents, schema, temperature = 0.7, signal }) {
   const body = { contents, generationConfig: { temperature } };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
   if (schema) { body.generationConfig.responseMimeType = 'application/json'; body.generationConfig.responseSchema = schema; }
-  const path = `models/${S.ai.model}:generateContent`;
   let d;
-  try { d = await gemFetch(path, body, signal); }
+  try { d = await gemCall(body, signal); }
   catch (e) {
     // Algunos modelos no aceptan responseSchema: se reintenta pidiendo solo JSON.
     if (schema && e.status === 400 && /schema/i.test(e.raw || '')) {
       delete body.generationConfig.responseSchema;
       body.contents = contents.concat([{ role: 'user', parts: [{ text: 'Respondé SOLO con JSON válido que siga exactamente esta estructura (JSON Schema): ' + JSON.stringify(schema) }] }]);
-      d = await gemFetch(path, body, signal);
+      d = await gemCall(body, signal);
     } else throw e;
   }
   const cand = d.candidates && d.candidates[0];
