@@ -15,8 +15,8 @@ const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: 
 let S = Object.assign(FRESH(), store.load());
 // Borrador del formulario de perfil: se guarda mientras se escribe, para no perder nada si la app se cierra o se actualiza.
 // Versión de la app: al cambiar, se avisa que hay novedades y se invita a revisar el perfil (con los datos ya cargados).
-const APP_VERSION = '5';
-const APP_NEWS = 'Novedades: si Gemini está saturado, la app reintenta sola y prueba otros modelos; podés escribir una comida especial que no esté en la lista (punto 7 del perfil); y el formulario se guarda solo mientras lo completás.';
+const APP_VERSION = '7';
+const APP_NEWS = 'Ahora la app se actualiza sola al abrirla, y en Más se ve la versión y hay un botón para buscar actualizaciones. Novedades en el Diario: en cada comida podés marcar si comiste el plan (y qué porción), otra cosa o nada, y te recalcula lo que te queda; y cada día podés elegir si fue de entrenamiento o de descanso.';
 const DRAFT_KEY = 'fit.draft';
 const draft = {
   load() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch (e) { return null; } },
@@ -703,6 +703,7 @@ function viewProfile(first) {
       <button class="ghost danger" data-reset>Borrar todos mis datos</button>
     </div>
     <p class="hint">Tus datos se guardan solo en este teléfono, no se envían a ningún servidor. Exportá un backup si vas a cambiar de celular o borrar el navegador.</p>
+    <p class="hint">Fit versión ${APP_VERSION}. <a href="#" data-x="forceupdate">Buscar actualización</a></p>
   </section>
   <section class="card"><h3>Cómo calcula Fit</h3>
     <p class="hint">Metabolismo basal: Mifflin-St Jeor. % de grasa: método de la Marina de EE.UU. (cintura, cuello y cadera) o el valor que cargues. Proteína: 1,6–2,0 g/kg según el objetivo, dentro del rango que recomienda la International Society of Sports Nutrition (ISSN). Grasas: alrededor del 28 % de las calorías (mínimo 0,6 g/kg). Carbohidratos: el resto. Valores de alimentos: USDA FoodData Central y tablas argentinas; son aproximados.</p>
@@ -848,7 +849,11 @@ $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') e.ta
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; if (TAB === 'perfil') render(); });
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.register('sw.js').then((reg) => reg.update().catch(() => {})).catch(() => {});
+  // Cuando se activa una versión nueva de la app, se recarga una vez para mostrarla (los datos no se tocan).
+  let swReloaded = false;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (swReloaded || !hadController) return; swReloaded = true; location.reload(); });
 }
 
 render();

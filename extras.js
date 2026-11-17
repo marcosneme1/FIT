@@ -24,11 +24,11 @@ function prePost(P, slots) {
 // Metas por comida para un día concreto (0 = lunes). Los días de entrenamiento suman carbohidratos
 // (sobre todo antes y después de entrenar) y los de descanso restan lo mismo: el promedio semanal
 // de calorías y carbohidratos no cambia, y la proteína y las grasas tampoco.
-function daySlots(X, P, d) {
+function daySlots(X, P, d, force) {
   const slots = X.slots.map((s) => ({ ...s }));
   const td = P.trainDays || []; const nT = td.length, nR = 7 - nT;
   if (!nT) return slots;
-  const train = td.includes(d);
+  const train = force === undefined ? td.includes(d) : !!force;
   const pp = prePost(P, slots);
   if (train) slots.forEach((s) => { s.train = true; if (s.key === pp.pre) s.pre = true; if (s.key === pp.post) s.post = true; });
   if (!nR) return slots;
@@ -184,9 +184,23 @@ function setSwap(idx, to) {
 // Diario
 // =====================================================================
 let diaDate = null; // se inicializa al abrir el diario
+let ADDSLOT = null; // comida a la que se asigna lo que se agrega (null = fuera de las comidas)
 function dateIdx(iso) { const [y, m, d] = iso.split('-').map(Number); return (new Date(y, m - 1, d).getDay() + 6) % 7; }
 function shiftDate(iso, n) { const [y, m, d] = iso.split('-').map(Number); const dt = new Date(y, m - 1, d + n); return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`; }
-const logOf = (iso) => (S.log[iso] = S.log[iso] || { done: {}, items: [] });
+function logOf(iso) {
+  const L = (S.log[iso] = S.log[iso] || { meals: {}, items: [] });
+  if (!L.meals) L.meals = {};
+  if (!L.items) L.items = [];
+  if (L.done) { // migración de la versión anterior (comidas tildadas)
+    Object.entries(L.done).forEach(([k, n]) => { if (!L.meals[k]) L.meals[k] = { st: 'plan', q: 1, snap: n }; });
+    delete L.done;
+  }
+  return L;
+}
+const peekLog = (iso) => (S.log[iso] ? logOf(iso) : { meals: {}, items: [] });
+// ¿Ese día es de entrenamiento? Primero lo que se eligió en el diario; si no, lo del perfil.
+function diaTrain(iso) { const L = S.log[iso]; return L && L.dayType ? L.dayType === 'train' : isTrainDay(S.profile, dateIdx(iso)); }
+function diaSlots(iso) { const P = S.profile; const L = S.log[iso]; return daySlots(calc(P), P, dateIdx(iso), L && L.dayType ? L.dayType === 'train' : undefined); }
 
 function planMealsFor(d, slots) {
   return slots.map((s) => {
@@ -202,39 +216,83 @@ function planMealsFor(d, slots) {
   });
 }
 
+const Z = () => ({ k: 0, p: 0, c: 0, f: 0 });
+const addN = (t, n, q = 1) => { t.k += n.k * q; t.p += n.p * q; t.c += n.c * q; t.f += n.f * q; return t; };
+function mealConsumed(L, key) {
+  const t = Z(); const m = L.meals[key];
+  if (m && m.st === 'plan' && m.snap) addN(t, m.snap, m.q || 1);
+  L.items.filter((i) => i.slot === key).forEach((i) => addN(t, i));
+  return t;
+}
+function refreshSnaps(iso) { // recalcula las porciones del plan ya marcadas (p. ej. al cambiar el tipo de día)
+  const L = logOf(iso); const pm = planMealsFor(dateIdx(iso), diaSlots(iso));
+  Object.entries(L.meals).forEach(([k, m]) => { if (m.st === 'plan') { const it = pm.find((x) => x.s.key === k); if (it && it.n) m.snap = { name: it.name, k: it.n.k, p: it.n.p, c: it.n.c, f: it.n.f }; } });
+}
+
 function pbar(label, v, t, cls, unit) {
   const pct = t ? (v / t) * 100 : 0;
   return `<div class="pb"><div class="pbh"><span>${label}</span><b>${Math.round(v)} / ${Math.round(t)} ${unit}</b></div>
     <div class="pbar ${cls} ${pct > 110 ? 'over' : ''}"><span style="width:${Math.min(100, pct)}%"></span></div></div>`;
 }
+const QS = [[0.5, '½'], [0.75, '¾'], [1, '1'], [1.25, '1¼'], [1.5, '1½']];
+function itemsHTML(list) {
+  return `<ul class="opts">${list.map((it) => `<li><span>${esc(it.n)}</span><b>${Math.round(it.k)} kcal <button class="x" data-x="delitem" data-i="${it.i}" aria-label="Borrar">×</button></b><small>${it.g ? Math.round(it.g) + ' g · ' : ''}P ${Math.round(it.p)} · C ${Math.round(it.c)} · G ${Math.round(it.f)}${it.est ? ' (estimados)' : ''}</small></li>`).join('')}</ul>`;
+}
 
 function viewDiario() {
   if (!diaDate) diaDate = todayISO();
-  const P = S.profile; const X = calc(P); const d = dateIdx(diaDate); const slots = daySlots(X, P, d); const T = sumSlots(slots);
-  const L = S.log[diaDate] || { done: {}, items: [] };
-  const meals = planMealsFor(d, slots);
-  const eaten = { k: 0, p: 0, c: 0, f: 0 };
-  Object.values(L.done).forEach((n) => { eaten.k += n.k; eaten.p += n.p; eaten.c += n.c; eaten.f += n.f; });
-  L.items.forEach((n) => { eaten.k += n.k; eaten.p += n.p; eaten.c += n.c; eaten.f += n.f; });
-  const isToday = diaDate === todayISO();
-  const [y, mo, da] = diaDate.split('-');
+  const P = S.profile; const d = dateIdx(diaDate); const slots = diaSlots(diaDate); const T = sumSlots(slots);
+  const L = peekLog(diaDate); const meals = planMealsFor(d, slots);
+  const keys = slots.map((s) => s.key);
+  const items = L.items.map((it, i) => ({ ...it, i }));
+  const eaten = Z();
+  keys.forEach((k) => addN(eaten, mealConsumed(L, k)));
+  items.filter((it) => !it.slot || !keys.includes(it.slot)).forEach((it) => addN(eaten, it));
   const left = T.k - eaten.k, leftP = T.p - eaten.p;
+  const pend = slots.filter((s) => !L.meals[s.key] && !items.some((it) => it.slot === s.key));
+  const pendK = pend.reduce((a, s) => a + s.k, 0);
+  const td = P.trainDays || []; const cycling = td.length > 0 && td.length < 7;
+  const train = diaTrain(diaDate); const defTrain = isTrainDay(P, d);
+  const isToday = diaDate === todayISO(); const [y, mo, da] = diaDate.split('-');
+  const ST = { plan: '✓ Comí el plan', other: '✎ Comí otra cosa', skip: '✗ No comí' };
+
+  const cards = meals.map(({ s, name, n, free }) => {
+    const m = L.meals[s.key]; const st = m && m.st; const mine = items.filter((it) => it.slot === s.key);
+    const got = mealConsumed(L, s.key);
+    const sugg = !st && !mine.length && pendK > 0 ? Math.max(0, Math.round((left * s.k) / pendK)) : null;
+    return `<section class="card meal dmeal ${st ? 'st-' + st : ''}">
+      <header><h3>${esc(s.name)}</h3><span class="pill">${esc(mealTime(P, s.key))}</span>${trainPill(s)}</header>
+      <p class="hint" style="margin-top:2px">Plan: ${esc(name)}${n ? ` · ${Math.round(n.k)} kcal` : ''}</p>
+      <div class="seg3">${Object.entries(ST).map(([v, l]) => `<button class="${st === v ? 'on' : ''}" data-x="mst" data-k="${s.key}" data-v="${v}" ${v === 'plan' && !n ? 'disabled' : ''}>${l}</button>`).join('')}</div>
+      ${st === 'plan' ? `<div class="qrow"><span class="muted">Porción:</span>${QS.map(([q, l]) => `<button class="chip ${(m.q || 1) === q ? 'on' : ''}" data-x="mq" data-k="${s.key}" data-q="${q}">${l}</button>`).join('')}</div>${free ? '<p class="hint">Comida libre: se cuenta con el valor de esa comida del plan. Si sabés lo que comiste, mejor elegí "Comí otra cosa" y cargalo.</p>' : ''}` : ''}
+      ${mine.length ? itemsHTML(mine) : ''}
+      ${st === 'other' ? `${mine.length ? '' : '<p class="hint">Cargá lo que comiste en esta comida:</p>'}<div class="actions"><button data-x="addfood" data-slot="${s.key}">+ Alimento</button><button class="ghost" data-x="quick" data-slot="${s.key}">Carga rápida</button><button class="ghost" data-x="scan" data-slot="${s.key}">Escanear</button></div>`
+        : st === 'plan' ? `<div class="actions"><button class="ghost sm" data-x="addfood" data-slot="${s.key}">+ Sumar algo más</button></div>` : ''}
+      <p class="mtot">${st || mine.length ? `Comido: <b>${Math.round(got.k)} kcal</b> <span class="muted">de ${Math.round(s.k)} · P ${Math.round(got.p)} g</span>`
+        : sugg != null ? `Te quedan ≈ <b>${sugg} kcal</b> para esta comida <span class="muted">(objetivo ${Math.round(s.k)})</span>` : ''}</p>
+    </section>`;
+  }).join('');
+  const extras = items.filter((it) => !it.slot || !keys.includes(it.slot));
+
   return `
   <div class="datebar"><button class="ghost" data-x="dprev" aria-label="Día anterior">‹</button>
-    <div><b>${isToday ? 'Hoy' : DAYS[d]}</b> <span class="muted">${da}/${mo}/${y}</span>${isTrainDay(P, d) ? ' <span class="pill tr">Entrenamiento</span>' : ''}</div>
+    <div><b>${isToday ? 'Hoy' : DAYS[d]}</b> <span class="muted">${da}/${mo}/${y}</span></div>
     <button class="ghost" data-x="dnext" aria-label="Día siguiente">›</button></div>
   ${isToday ? '' : '<div class="actions center"><button class="ghost" data-x="dtoday">Ir a hoy</button></div>'}
+  ${cycling ? `<div class="seg"><button class="${train ? 'on' : ''}" data-x="dtype" data-v="train">Día de entrenamiento</button><button class="${!train ? 'on' : ''}" data-x="dtype" data-v="rest">Día de descanso</button></div>
+    ${train !== defTrain ? `<p class="hint center">Cambiado solo para este día (los ${DAYS[d].toLowerCase()} normalmente son de ${defTrain ? 'entrenamiento' : 'descanso'}).</p>` : ''}`
+    : '<p class="hint center">Para distinguir días de entrenamiento y de descanso, marcá tus días de entrenamiento en <a href="#" data-tab="perfil">Perfil → Actividad</a>.</p>'}
   <section class="card">
     ${pbar('Calorías', eaten.k, T.k, 'k', 'kcal')}${pbar('Proteínas', eaten.p, T.p, 'p', 'g')}${pbar('Carbohidratos', eaten.c, T.c, 'c', 'g')}${pbar('Grasas', eaten.f, T.f, 'f', 'g')}
-    <p class="hint">${left >= 0 ? `Te quedan <b>${Math.round(left)} kcal</b>` : `Te pasaste <b>${Math.round(-left)} kcal</b>`}${leftP > 0 ? ` y <b>${Math.round(leftP)} g de proteína</b>.` : ' y ya cubriste la proteína.'}</p>
+    <p class="hint">${left >= 0 ? `Te quedan <b>${Math.round(left)} kcal</b>` : `Te pasaste <b>${Math.round(-left)} kcal</b>`}${leftP > 0 ? ` y <b>${Math.round(leftP)} g de proteína</b>.` : ' y ya cubriste la proteína.'}
+    ${pend.length && pend.length < slots.length ? (left > 0 ? ` Para lo que falta (${pend.map((s) => s.name.toLowerCase()).join(', ')}), cada comida tiene su sugerencia ajustada abajo.` : ' Para lo que falta, priorizá verduras y proteína magra.') : ''}</p>
   </section>
-  <h2 class="sec">Comidas del plan</h2>
-  <section class="card"><ul class="checks">${meals.map(({ s, name, n, free }) => `<li><label><input type="checkbox" data-done="${s.key}" ${L.done[s.key] ? 'checked' : ''} ${n ? '' : 'disabled'}>
-    <span><small class="muted">${esc(s.name)}${trainPill(s) ? ' · ' + (s.pre ? 'pre-entreno' : 'post-entreno') : ''}</small><br>${esc(name)}</span><b>${n ? Math.round(n.k) + ' kcal' : ''}</b></label>${free ? '<small class="muted">Comida libre: se cuenta con el valor de esa comida del plan. Si sabés lo que comiste, cargalo abajo en vez de tildarla.</small>' : ''}</li>`).join('')}</ul>
-  <p class="hint">Tildá lo que comiste. Si cambiaste un ingrediente, hacelo desde el Menú antes de tildar para que sume bien.</p></section>
-  <h2 class="sec">Otros alimentos</h2>
+  <h2 class="sec">Comidas</h2>
+  <p class="hint">En cada comida marcá si comiste el plan (y cuánto), otra cosa o nada.</p>
+  ${cards}
+  <h2 class="sec">Fuera de las comidas</h2>
   <section class="card">
-    ${L.items.length ? `<ul class="opts">${L.items.map((it, i) => `<li><span>${esc(it.n)}</span><b>${Math.round(it.k)} kcal <button class="x" data-x="delitem" data-i="${i}" aria-label="Borrar">×</button></b><small>${it.g ? Math.round(it.g) + ' g · ' : ''}P ${Math.round(it.p)} · C ${Math.round(it.c)} · G ${Math.round(it.f)}</small></li>`).join('')}</ul>` : '<p class="hint">Nada cargado fuera del plan.</p>'}
+    ${extras.length ? itemsHTML(extras) : '<p class="hint">Picoteos, bebidas o lo que no corresponda a una comida.</p>'}
     <div class="actions"><button data-x="addfood">+ Alimento</button><button class="ghost" data-x="scan">Escanear producto</button><button class="ghost" data-x="quick">Carga rápida</button></div>
   </section>`;
 }
@@ -247,7 +305,8 @@ function foodSearchHTML(q) {
 }
 function openAddFood() {
   ADD = null;
-  $('#modalBody').innerHTML = `<h2>Agregar alimento</h2>
+  const sl = ADDSLOT && diaSlots(diaDate).find((x) => x.key === ADDSLOT);
+  $('#modalBody').innerHTML = `<h2>Agregar ${sl ? 'a ' + esc(sl.name.toLowerCase()) : 'alimento'}</h2>
     <input id="fsearch" type="search" placeholder="Buscar alimento…" autocomplete="off">
     <ul class="opts" id="fres">${foodSearchHTML('')}</ul>`;
   $('#modal').showModal(); setTimeout(() => $('#fsearch') && $('#fsearch').focus(), 50);
@@ -263,10 +322,10 @@ function updatePrev() {
   const g = +($('#fgrams') || {}).value || 0; const x = ADD && ADD.food; if (!x || !$('#fprev')) return;
   const m = g / 100; $('#fprev').innerHTML = `${g} g = <b>${Math.round(x.k * m)} kcal</b> · P ${Math.round(x.p * m)} · C ${Math.round(x.c * m)} · G ${Math.round(x.f * m)}${ADD.id && FOODS[ADD.id] && household(ADD.id, g) ? ' · ' + household(ADD.id, g) : ''}`;
 }
-function addItem(item) { const L = logOf(diaDate); L.items.push(item); store.save(); }
+function addItem(item) { const L = logOf(diaDate); item.slot = ADDSLOT || null; if (ADDSLOT && !L.meals[ADDSLOT]) L.meals[ADDSLOT] = { st: 'other' }; L.items.push(item); store.save(); }
 
 function openQuick() {
-  $('#modalBody').innerHTML = `<h2>Carga rápida</h2><p class="hint">Para algo que no está en la lista (por ejemplo, una comida afuera). Si no sabés los macros, poné solo las calorías.</p>
+  $('#modalBody').innerHTML = `<h2>Carga rápida</h2><p class="hint">Para algo que no está en la lista (por ejemplo, una comida afuera). Si no sabés los macros, poné solo las calorías: los que dejes en blanco se estiman como una comida mixta típica.</p>
     <form id="quickForm" class="grid2"><label class="span2">Qué comiste<input name="n" required></label>
     <label>Calorías<input name="k" type="number" inputmode="decimal" required></label><label>Proteínas (g)<input name="p" type="number" inputmode="decimal"></label>
     <label>Carbohidratos (g)<input name="c" type="number" inputmode="decimal"></label><label>Grasas (g)<input name="f" type="number" inputmode="decimal"></label>
@@ -430,10 +489,28 @@ function viewMas() {
     ${tile('', '📷', 'Escanear', 'Código de barras de un producto', 'scan')}
     ${tile('perfil', '👤', 'Perfil', 'Datos, objetivos, entrenamiento')}
   </div>
+  <section class="card"><h3>Versión de la app</h3>
+    <p class="hint">Tenés Fit <b>versión ${APP_VERSION}</b>. Si sabés que hay una más nueva y no aparece, tocá el botón: baja la última versión sin tocar tus datos.</p>
+    <div class="actions"><button class="ghost" data-x="forceupdate">Buscar actualización</button></div>
+  </section>
   <section class="card"><h3>Mis alimentos</h3>
     ${mine.length ? `<ul class="opts">${mine.map(([id, x]) => `<li><span>${esc(x.n)}</span><b>${Math.round(x.k)} kcal <button class="x" data-x="delfood" data-id="${esc(id)}" aria-label="Borrar">×</button></b><small>por 100 g · P ${x.p} · C ${x.c} · G ${x.f}</small></li>`).join('')}</ul>` : '<p class="hint">Los productos que escanees o cargues a mano aparecen acá.</p>'}
     <div class="actions"><button class="ghost" data-x="scan">Escanear producto</button><button class="ghost" data-x="newfood">Cargar a mano</button></div>
   </section>`;
+}
+
+// Fuerza la descarga de la última versión: actualiza el service worker, borra los archivos guardados
+// de la app (NO los datos, que están en localStorage) y recarga.
+async function forceUpdate() {
+  toast('Buscando la última versión…');
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.update().catch(() => {})));
+    }
+    if (window.caches) { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); }
+  } catch (_) { /* seguir igual */ }
+  const u = new URL(location.href); u.searchParams.set('u', Date.now()); location.replace(u.toString());
 }
 
 // =====================================================================
@@ -449,7 +526,22 @@ function xAction(t) {
   if (a === 'dnext') { diaDate = shiftDate(diaDate, 1); render(); return; }
   if (a === 'dtoday') { diaDate = todayISO(); render(); return; }
   if (a === 'delitem') { logOf(diaDate).items.splice(+d.i, 1); store.save(); render(); return; }
-  if (a === 'addfood') { openAddFood(); return; }
+  if (a === 'addfood') { ADDSLOT = TAB === 'diario' ? d.slot || null : null; openAddFood(); return; }
+  if (a === 'mst') {
+    const L = logOf(diaDate); const cur = L.meals[d.k];
+    if (cur && cur.st === d.v) delete L.meals[d.k];
+    else if (d.v === 'plan') {
+      const it = planMealsFor(dateIdx(diaDate), diaSlots(diaDate)).find((x) => x.s.key === d.k);
+      L.meals[d.k] = { st: 'plan', q: (cur && cur.q) || 1, snap: it && it.n ? { name: it.name, k: it.n.k, p: it.n.p, c: it.n.c, f: it.n.f } : null };
+    } else L.meals[d.k] = { st: d.v };
+    store.save(); render(); return;
+  }
+  if (a === 'mq') { const L = logOf(diaDate); if (L.meals[d.k]) L.meals[d.k].q = +d.q; store.save(); render(); return; }
+  if (a === 'dtype') {
+    const L = logOf(diaDate); const def = isTrainDay(S.profile, dateIdx(diaDate));
+    if ((d.v === 'train') === def) delete L.dayType; else L.dayType = d.v;
+    refreshSnaps(diaDate); store.save(); render(); return;
+  }
   if (a === 'pickfood') { const food = FOODS[d.id]; ADD = { food, id: d.id }; $('#fres').innerHTML = ''; $('#fsearch').insertAdjacentHTML('afterend', gramsForm(food, food.u && food.u[1] >= 20 ? food.u[1] : 100, 'Agregar al diario')); $('#fsearch').remove(); updatePrev(); return; }
   if (a === 'addfoodok') {
     const g = +($('#fgrams') || {}).value || 0; if (!g || !ADD) { toast('Poné la cantidad'); return; }
@@ -457,8 +549,8 @@ function xAction(t) {
     addItem({ n: x.n, g, k: x.k * m, p: x.p * m, c: x.c * m, f: x.f * m, id: ADD.id || null });
     stopScan(); $('#modal').close(); TAB = 'diario'; render(); toast('Agregado al diario'); return;
   }
-  if (a === 'quick') { openQuick(); return; }
-  if (a === 'scan') { openScan(TAB === 'diario'); return; }
+  if (a === 'quick') { ADDSLOT = TAB === 'diario' ? d.slot || null : null; openQuick(); return; }
+  if (a === 'scan') { ADDSLOT = TAB === 'diario' ? d.slot || null : null; openScan(TAB === 'diario'); return; }
   if (a === 'scanlookup') { stopScan(); lookupProduct(($('#scanCode') || {}).value); return; }
   if (a === 'scansave') { saveCustomFood(SCAN.id, SCAN.food); ADD.id = SCAN.id; toast('Guardado en tus alimentos'); showProduct(SCAN.food, SCAN.id, +($('#fgrams') || {}).value || 100); render(); return; }
   if (a === 'newfood') { SCAN = { forDiary: false }; $('#modalBody').innerHTML = `<h2>Cargar alimento</h2><div id="scanRes">${manualFoodForm('', '')}</div>`; $('#modal').showModal(); return; }
@@ -468,6 +560,7 @@ function xAction(t) {
   if (a === 'cmacro') { calcMacro = d.k; calcNeed = null; render(); return; }
   if (a === 'cneedreset') { calcNeed = null; render(); return; }
   if (a === 'ptype') { planType = d.v; render(); return; }
+  if (a === 'forceupdate') { forceUpdate(); return; }
   if (a === 'seenupd') { S.seenVersion = APP_VERSION; store.save(); if (d.go) TAB = d.go; render(); return; }
   if (a === 'discarddraft') { if (confirm('¿Descartar lo que no guardaste?')) { draft.clear(); render(); } }
 }
@@ -482,20 +575,22 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'cfood') { calcFood = t.value; $('#convRes').innerHTML = convResHTML(); }
-  if (t.dataset && t.dataset.done) {
-    const L = logOf(diaDate); const P = S.profile; const d = dateIdx(diaDate);
-    const it = planMealsFor(d, daySlots(calc(P), P, d)).find((x) => x.s.key === t.dataset.done);
-    if (t.checked && it && it.n) L.done[t.dataset.done] = { name: it.name, k: it.n.k, p: it.n.p, c: it.n.c, f: it.n.f }; else delete L.done[t.dataset.done];
-    store.save(); render();
-  }
   if (t.name && t.name.startsWith('sp_') && t.closest('#pform')) { const box = document.querySelector(`.spc[data-for="${t.name.slice(3)}"]`); if (box) { box.hidden = t.value !== 'custom'; if (t.value === 'custom') box.querySelector('input').focus(); } }
   if (t.name === 'meals' && t.closest('#pform')) { const box = $('#mealTimes'); if (box) box.innerHTML = mealTimesHTML(S.profile || {}, +t.value); }
 });
 document.addEventListener('submit', (e) => {
   const f = e.target;
   if (f.id === 'quickForm') {
-    e.preventDefault(); const fd = new FormData(f); const n = (k) => +(fd.get(k) || 0);
-    addItem({ n: fd.get('n').trim(), g: 0, k: n('k'), p: n('p'), c: n('c'), f: n('f') });
+    e.preventDefault(); const fd = new FormData(f);
+    const v = (k) => (fd.get(k) === '' || fd.get(k) == null ? null : +fd.get(k));
+    const k = v('k') || 0; const m = { p: v('p'), c: v('c'), f: v('f') };
+    // Macros en blanco: se estiman con el reparto de una comida mixta típica (20 % proteína, 50 % carbos, 30 % grasa).
+    const KPG = { p: 4, c: 4, f: 9 }; const W = { p: 0.2, c: 0.5, f: 0.3 };
+    const miss = Object.keys(m).filter((x) => m[x] == null);
+    const known = Object.keys(m).filter((x) => m[x] != null).reduce((a, x) => a + m[x] * KPG[x], 0);
+    const rest = Math.max(0, k - known); const wsum = miss.reduce((a, x) => a + W[x], 0) || 1;
+    miss.forEach((x) => { m[x] = (rest * W[x]) / wsum / KPG[x]; });
+    addItem({ n: fd.get('n').trim(), g: 0, k, p: m.p, c: m.c, f: m.f, est: miss.length > 0 });
     $('#modal').close(); render(); toast('Agregado al diario');
   }
   if (f.id === 'manualFood') {

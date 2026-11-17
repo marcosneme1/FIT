@@ -286,3 +286,14 @@ li.pick:hover, li.pick:active { background: var(--brand-soft); }
 
 .card.upd { border-color: var(--info-ink); background: var(--info-bg); }
 .card.upd h3, .card.upd .hint { color: var(--info-ink); }
+
+/* Diario por comida */
+.seg3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 3px; margin-top: 10px; }
+.seg3 button { background: transparent; color: var(--muted); padding: 8px 4px; border-radius: 9px; font-size: 12.5px; line-height: 1.2; }
+.seg3 button.on { background: var(--brand); color: var(--brand-ink); }
+.dmeal.st-skip .seg3 button.on { background: var(--muted); }
+.dmeal.st-other .seg3 button.on { background: var(--c); color: #fff; }
+.qrow { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; font-size: 13px; }
+.qrow .chip { padding: 4px 12px; }
+.mtot { margin: 10px 0 0; font-size: 14px; }
+button.sm { padding: 6px 12px; font-size: 13px; }
