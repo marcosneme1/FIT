@@ -8,20 +8,28 @@ const aiReady = () => !!(S.ai && S.ai.key && S.ai.model);
 let aiAbort = null;
 
 // ---------------- Cliente de la API ----------------
-async function gemFetch(path, body, signal, key = S.ai && S.ai.key) {
-  let res;
+// Pedido a la API con límite de tiempo. Distingue: error de Google (con código), tiempo agotado y "no llegó respuesta".
+async function gemFetch(path, body, signal, key = S.ai && S.ai.key, ms = 90000) {
+  const ctl = new AbortController(); let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, ms);
+  const onAbort = () => ctl.abort();
+  if (signal) { if (signal.aborted) ctl.abort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+  let res, data;
   try {
     res = await fetch(`${GEM_BASE}/${path}`, {
       method: body ? 'POST' : 'GET',
       headers: Object.assign({ 'x-goog-api-key': key }, body ? { 'Content-Type': 'application/json' } : {}),
       body: body ? JSON.stringify(body) : undefined,
-      signal,
+      signal: ctl.signal,
     });
+    data = await res.json().catch(() => ({}));
   } catch (e) {
-    if (e.name === 'AbortError') throw e;
-    throw new Error('No hay conexión con Gemini. Revisá tu internet.');
+    if (timedOut) { const err = new Error(`Gemini tardó más de ${Math.round(ms / 1000)} segundos en responder.`); err.status = 'timeout'; err.raw = 'timeout'; throw err; }
+    if (signal && signal.aborted) throw new DOMException('Cancelado', 'AbortError');
+    const err = new Error('No llegó respuesta de Gemini: la conexión se cortó o Google cerró el pedido sin responder.'); err.status = 'network'; err.raw = String((e && e.message) || e); throw err;
+  } finally {
+    clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort);
   }
-  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = (data.error && data.error.message) || res.statusText || 'Error desconocido';
     const err = new Error(friendlyError(res.status, msg)); err.status = res.status; err.raw = msg; throw err;
@@ -67,20 +75,39 @@ function rankedModels() {
 }
 // Llama a Gemini con reintentos: si el modelo está saturado (5xx) reintenta, y si sigue fallando
 // (o no existe, o se agotó su cupo) prueba con otros modelos de la lista.
+const modelVer = (id) => { const m = String(id).match(/gemini-(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
+// Orden de modelos a probar: el elegido, uno estable de una generación anterior y otro distinto.
+function fallbackOrder() {
+  const cur = S.ai.model; const out = [cur];
+  const pool = rankedModels().filter((id) => id !== cur && !/(preview|exp|pro)/.test(id));
+  const older = pool.find((id) => modelVer(id) < modelVer(cur));
+  const other = pool.find((id) => id !== older);
+  [older, other].forEach((id) => { if (id && !out.includes(id)) out.push(id); });
+  return out;
+}
+const isTransient = (e) => e.status === 'timeout' || e.status === 'network' || e.status >= 500;
+// Misma consulta pero sin esquema estricto: el formato se pide por escrito (algunos modelos fallan con esquemas).
+function noSchemaBody(body) {
+  const sch = body.generationConfig && body.generationConfig.responseSchema; if (!sch) return body;
+  const b2 = JSON.parse(JSON.stringify(body)); delete b2.generationConfig.responseSchema;
+  b2.contents = b2.contents.concat([{ role: 'user', parts: [{ text: 'Respondé SOLO con JSON válido (sin texto extra ni ```), siguiendo exactamente esta estructura (JSON Schema): ' + JSON.stringify(sch) }] }]);
+  return b2;
+}
 async function gemCall(body, signal) {
-  const order = [S.ai.model].concat(rankedModels().filter((id) => id !== S.ai.model)).slice(0, 3);
+  const order = fallbackOrder();
   let lastErr;
   for (const model of order) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const d = await gemFetch(`models/${model}:generateContent`, body, signal);
+        const d = await gemFetch(`models/${model}:generateContent`, attempt ? noSchemaBody(body) : body, signal);
         if (model !== S.ai.model) { const prev = S.ai.model; S.ai.model = model; store.save(); toast(`${prev} no respondía: se usó ${model}`); }
         return d;
       } catch (e) {
         if (e.name === 'AbortError') throw e;
         lastErr = e;
-        if (e.status >= 500 && attempt < 2) { busyMsg(`Gemini está saturado, reintentando (${attempt + 2}/3)…`); await sleep(attempt ? 5000 : 2000, signal); continue; }
-        if (e.status >= 500 || e.status === 404 || e.status === 429) { busyMsg('Probando con otro modelo de Gemini…'); break; }
+        const hasSchema = !!(body.generationConfig && body.generationConfig.responseSchema);
+        if (attempt < 1 && ((typeof e.status === 'number' && e.status >= 500) || (hasSchema && e.status === 400 && /schema/i.test(e.raw || '')))) { busyMsg(hasSchema ? 'Reintentando con un pedido más simple…' : 'Gemini no respondió bien, reintentando…'); await sleep(2000, signal); continue; }
+        if (isTransient(e) || e.status === 404 || e.status === 429) { busyMsg(`${model} falló: probando con otro modelo…`); break; }
         throw e;
       }
     }
@@ -93,15 +120,7 @@ async function gemGenerate({ system, contents, schema, temperature = 0.7, signal
   if (system) body.systemInstruction = { parts: [{ text: system }] };
   if (schema) { body.generationConfig.responseMimeType = 'application/json'; body.generationConfig.responseSchema = schema; }
   let d;
-  try { d = await gemCall(body, signal); }
-  catch (e) {
-    // Algunos modelos no aceptan responseSchema: se reintenta pidiendo solo JSON.
-    if (schema && e.status === 400 && /schema/i.test(e.raw || '')) {
-      delete body.generationConfig.responseSchema;
-      body.contents = contents.concat([{ role: 'user', parts: [{ text: 'Respondé SOLO con JSON válido que siga exactamente esta estructura (JSON Schema): ' + JSON.stringify(schema) }] }]);
-      d = await gemCall(body, signal);
-    } else throw e;
-  }
+  d = await gemCall(body, signal);
   const cand = d.candidates && d.candidates[0];
   const text = ((cand && cand.content && cand.content.parts) || []).filter((p) => !p.thought).map((p) => p.text || '').join('');
   if (!text) {
@@ -200,7 +219,7 @@ function idle() { $('#busy').hidden = true; aiAbort = null; }
 function aiFail(e) {
   idle();
   if (e && e.name === 'AbortError') { toast('Cancelado'); return; }
-  alert('No se pudo completar: ' + (e && e.message ? e.message : e));
+  alert('No se pudo completar: ' + (e && e.message ? e.message : e) + '\n\nPara ver el detalle: Más → Perfil → Inteligencia artificial → Probar conexión.');
 }
 
 async function aiConnect() {
@@ -344,6 +363,50 @@ async function aiChatSend() {
   const log = $('#chatLog'); if (log) log.scrollIntoView({ block: 'end' });
 }
 
+// ---------------- Diagnóstico ----------------
+// Hace pedidos de complejidad creciente con el modelo elegido (y uno mínimo con otros modelos)
+// y muestra qué funciona y qué no, con el código y el mensaje real de Google. No muestra la clave.
+async function aiDiag() {
+  const signal = busy('Probando la conexión con Gemini…');
+  const model = S.ai.model;
+  const schemaQ = { type: 'OBJECT', properties: { preguntas: { type: 'ARRAY', items: S_STR } }, required: ['preguntas'] };
+  const tests = [
+    ['Pedido mínimo', { contents: userMsg('Respondé solamente: OK') }],
+    ['Con instrucciones de sistema', { systemInstruction: { parts: [{ text: 'Respondé en español, muy breve.' }] }, contents: userMsg('Decí hola.') }],
+    ['Respuesta en JSON', { contents: userMsg('Devolvé {"ok": true}'), generationConfig: { responseMimeType: 'application/json' } }],
+    ['JSON con esquema', { contents: userMsg('Hacé 2 preguntas cortas sobre hábitos de comida.'), generationConfig: { responseMimeType: 'application/json', responseSchema: schemaQ } }],
+    ['Pedido real de la app', { systemInstruction: { parts: [{ text: AI_SYSTEM }] }, contents: userMsg(`${aiProfileText()}\n\nHacé entre 3 y 6 preguntas de seguimiento para personalizar el plan.`), generationConfig: { temperature: 0.5, responseMimeType: 'application/json', responseSchema: schemaQ } }],
+  ];
+  const rows = [];
+  const run = async (name, m, body) => {
+    busyMsg(`Probando: ${name} (${m})…`);
+    const t0 = Date.now();
+    try {
+      const d = await gemFetch(`models/${m}:generateContent`, body, signal, S.ai.key, 60000);
+      const cand = d.candidates && d.candidates[0];
+      const txt = ((cand && cand.content && cand.content.parts) || []).filter((p) => !p.thought).map((p) => p.text || '').join('');
+      rows.push({ name, m, ok: !!txt, code: 200, ms: Date.now() - t0, det: txt ? txt.slice(0, 80) : `sin texto (${(cand && cand.finishReason) || 'sin motivo'})` });
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      rows.push({ name, m, ok: false, code: e.status, ms: Date.now() - t0, det: String(e.raw || e.message).slice(0, 220) });
+    }
+  };
+  try {
+    for (const [name, body] of tests) await run(name, model, body);
+    for (const m of fallbackOrder().slice(1)) await run('Pedido mínimo', m, tests[0][1]);
+    idle();
+  } catch (e) { aiFail(e); return; }
+  const txt = [`Fit v${typeof APP_VERSION !== 'undefined' ? APP_VERSION : '?'} · ${new Date().toLocaleString('es-AR')} · ${navigator.userAgent.replace(/\s+/g, ' ').slice(0, 120)}`]
+    .concat(rows.map((r) => `${r.ok ? 'OK ' : 'ERR'} | ${r.name} | ${r.m} | ${r.code} | ${(r.ms / 1000).toFixed(1)} s | ${r.det}`)).join('\n');
+  const allOk = rows.every((r) => r.ok);
+  $('#modalBody').innerHTML = `<h2>Resultado de la prueba</h2>
+    <p class="hint">${allOk ? 'Todo funcionó: la conexión con Gemini anda bien.' : 'Algunas pruebas fallaron. Tocá "Copiar resultado" y pegalo en el chat de soporte (no incluye tu clave).'}</p>
+    <ul class="opts">${rows.map((r) => `<li><span>${r.ok ? '✅' : '❌'} ${esc(r.name)}</span><b>${(r.ms / 1000).toFixed(1)} s</b><small>${esc(r.m)} · ${esc(String(r.code))} · ${esc(r.det)}</small></li>`).join('')}</ul>
+    <textarea id="diagTxt" rows="6" hidden readonly>${esc(txt)}</textarea>
+    <div class="actions"><button data-ai="diagcopy">Copiar resultado</button></div>`;
+  $('#modal').showModal();
+}
+
 // ---------------- Vistas ----------------
 function mdLite(t) {
   return esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/^\s*[-*•]\s+/gm, '• ').replace(/\n/g, '<br>');
@@ -456,7 +519,7 @@ function aiSettingsCard() {
     <ol class="hint steps"><li>Entrá a <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> con tu cuenta de Google.</li><li>Tocá <b>Create API key</b> y copiá la clave.</li><li>Pegala acá abajo y tocá <b>Conectar</b>.</li></ol>
     <label>Clave de API<input type="password" id="aiKey" value="${esc(A.key || '')}" autocomplete="off" placeholder="AIza…"></label>
     ${A.models && A.models.length ? `<label style="margin-top:8px">Modelo<select id="aiModel">${A.models.map((m) => `<option value="${esc(m.id)}" ${m.id === A.model ? 'selected' : ''}>${esc(m.label)} (${esc(m.id)})</option>`).join('')}</select></label>` : ''}
-    <div class="actions"><button data-ai="connect">${A.key ? 'Reconectar' : 'Conectar'}</button>${A.key ? '<button class="ghost danger" data-ai="disconnect">Quitar clave</button>' : ''}</div>
+    <div class="actions"><button data-ai="connect">${A.key ? 'Reconectar' : 'Conectar'}</button>${A.key ? '<button class="ghost" data-ai="diag">Probar conexión</button><button class="ghost danger" data-ai="disconnect">Quitar clave</button>' : ''}</div>
     <div class="note warn">Privacidad: al usar la IA, tu perfil (edad, medidas, salud, gustos) se envía a Google. En el uso gratuito de la API, Google puede usar ese contenido para mejorar sus productos y puede ser leído por revisores humanos: no cargues datos que no quieras compartir. Términos: ai.google.dev/gemini-api/terms. La clave queda guardada solo en este teléfono y no se incluye en el backup.</div>
   </section>`;
 }
@@ -468,6 +531,8 @@ function aiAction(t) {
   if (a === 'connect') return aiConnect();
   if (a === 'disconnect') { if (confirm('¿Quitar la clave de Gemini de este teléfono?')) { S.ai = null; store.save(); render(); } return; }
   if (a === 'start') return aiStart();
+  if (a === 'diag') return aiDiag();
+  if (a === 'diagcopy') { const txt = ($('#diagTxt') || {}).value || ''; (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Resultado copiado')).catch(() => { const ta = $('#diagTxt'); ta.hidden = false; ta.select(); toast('Copialo de la caja de texto'); }); return; }
   if (a === 'src') { S.menuSource = t.dataset.src; store.save(); render(); return; }
   if (a === 'remeal') return aiRemeal(+t.dataset.d, t.dataset.k);
   if (a === 'meal') { const m = S.aiPlan.dias[+t.dataset.d].comidas.find((x) => x.comida === t.dataset.k); if (m) openAIMeal(m, ctxKey(+t.dataset.d, t.dataset.k, 'ia')); return; }
