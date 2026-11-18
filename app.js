@@ -15,7 +15,7 @@ const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: 
 let S = Object.assign(FRESH(), store.load());
 // Borrador del formulario de perfil: se guarda mientras se escribe, para no perder nada si la app se cierra o se actualiza.
 // Versión de la app: al cambiar, se avisa que hay novedades y se invita a revisar el perfil (con los datos ya cargados).
-const APP_VERSION = '10';
+const APP_VERSION = '11';
 const APP_NEWS = 'Fit está más simple: la pestaña Hoy junta el menú del día y lo que comiste; Plan muestra tus metas y una sola guía para armar el plato; Menú es un resumen de la semana. Nuevo: Foto del plato, Gemini estima las calorías cuando no tenés balanza (en Hoy → Comí otra cosa, o en Más).';
 const DRAFT_KEY = 'fit.draft';
 const draft = {

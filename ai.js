@@ -474,7 +474,8 @@ function openPhoto(slot) {
   PHOTO = { slot: slot || null, img: null, res: null };
   $('#modalBody').innerHTML = `<h2>Foto del plato</h2>
     <p class="hint">Sacá la foto desde arriba, con todo el plato a la vista. Si hay algo de referencia al lado (un tenedor, un vaso), ayuda a estimar el tamaño.</p>
-    <label class="btn photobtn">📷 Sacar o elegir foto<input type="file" accept="image/*" capture="environment" id="photoIn" hidden></label>
+    <div class="grid2 photobtns"><label class="btn">📷 Sacar foto<input type="file" accept="image/*" capture="environment" class="photoIn" hidden></label>
+    <label class="btn ghost">🖼️ Elegir de la galería<input type="file" accept="image/*" class="photoIn" hidden></label></div>
     <img id="photoPrev" class="photoprev" alt="" hidden>
     <label style="margin-top:10px">Aclaraciones (opcional)<textarea id="photoNote" rows="2" placeholder="Ej.: comí la mitad, la carne estaba frita, tenía mayonesa…"></textarea></label>
     <div class="actions"><button id="photoGo" data-ai="photogo" disabled>Calcular calorías</button></div>
@@ -669,7 +670,7 @@ document.addEventListener('change', (e) => {
   if (e.target.dataset.aishop) { const k = 'ia' + S.aiPlan.created; S.shop[k] = S.shop[k] || {}; S.shop[k][e.target.dataset.aishop] = e.target.checked; store.save(); }
 });
 document.addEventListener('change', async (e) => {
-  if (e.target.id !== 'photoIn' || !e.target.files[0]) return;
+  if (!e.target.classList || !e.target.classList.contains('photoIn') || !e.target.files[0]) return;
   try {
     PHOTO.img = await resizeImage(e.target.files[0]);
     const im = $('#photoPrev'); im.src = PHOTO.img.preview; im.hidden = false; $('#photoGo').disabled = false;
