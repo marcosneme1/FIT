@@ -15,8 +15,8 @@ const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: 
 let S = Object.assign(FRESH(), store.load());
 // Borrador del formulario de perfil: se guarda mientras se escribe, para no perder nada si la app se cierra o se actualiza.
 // Versión de la app: al cambiar, se avisa que hay novedades y se invita a revisar el perfil (con los datos ya cargados).
-const APP_VERSION = '11';
-const APP_NEWS = 'Fit está más simple: la pestaña Hoy junta el menú del día y lo que comiste; Plan muestra tus metas y una sola guía para armar el plato; Menú es un resumen de la semana. Nuevo: Foto del plato, Gemini estima las calorías cuando no tenés balanza (en Hoy → Comí otra cosa, o en Más).';
+const APP_VERSION = '12';
+const APP_NEWS = 'Nuevo en Compras: elegí para cuántas personas es la lista, y mirá el presupuesto semanal estimado con precios de INDEC (octubre 2026) que podés reemplazar por los tuyos. Fit está más simple: Hoy junta el menú del día y lo que comiste, y hay Foto del plato con Gemini.';
 const DRAFT_KEY = 'fit.draft';
 const draft = {
   load() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch (e) { return null; } },
@@ -530,7 +530,7 @@ function viewShop() {
   const tot = {};
   M.days.forEach((d, di) => daySlots(X, P, di).forEach((s) => {
     const r = R(d[s.key]); if (!r || r.free) return;
-    fitLines(r, s, ctxKey(di, s.key, 'fit')).forEach((l) => { tot[l.id] = (tot[l.id] || 0) + l.g; });
+    fitLines(r, s, ctxKey(di, s.key, 'fit')).forEach((l) => { tot[l.id] = (tot[l.id] || 0) + l.g * shopN(); });
   }));
   const byG = {};
   Object.entries(tot).forEach(([id, g]) => { const gr = FOODS[id].g; (byG[gr] = byG[gr] || []).push([id, g]); });
@@ -545,16 +545,28 @@ function viewShop() {
   };
   const key = `${M.created}`;
   const checked = S.shop[key] || {};
+  let total = 0, missing = 0;
+  Object.entries(tot).forEach(([id, g]) => { const p = priceOf(id); if (p) total += (g / 1000) * p.v; else missing++; });
   const html = Object.keys(GROUPS).filter((g) => byG[g]).map((g) => `<section class="card"><h3>${GROUPS[g]}</h3><ul class="shop">
-    ${byG[g].sort((a, b) => FOODS[a[0]].n.localeCompare(FOODS[b[0]].n)).map(([id, gr]) => `<li><label><input type="checkbox" data-shop="${id}" ${checked[id] ? 'checked' : ''}><span>${esc(FOODS[id].n)}</span><b>${fmt(id, gr)}</b></label></li>`).join('')}
+    ${byG[g].sort((a, b) => FOODS[a[0]].n.localeCompare(FOODS[b[0]].n)).map(([id, gr]) => `<li><label><input type="checkbox" data-shop="${id}" ${checked[id] ? 'checked' : ''}><span>${esc(FOODS[id].n)}</span><b>${fmt(id, gr)}</b></label>${priceCell(priceOf(id), gr, `data-price="${id}"`)}</li>`).join('')}
   </ul></section>`).join('');
   const nSpecial = M.days.reduce((a, d) => a + X.slots.filter((s) => R(d[s.key])?.free).length, 0);
   return `${aiMenuToggle()}<h2 class="sec">Lista de compras de la semana</h2>
-  <p class="hint">Calculada para el menú actual (1 persona, pesos en crudo).${nSpecial ? ` No incluye las ${nSpecial} comida(s) libre(s).` : ''} Si cambiás el menú, la lista se actualiza.</p>
+  ${shopPeopleHTML()}
+  ${budgetHTML(total, missing, Object.keys(tot).length)}
+  <p class="hint">Calculada para el menú actual, pesos en crudo.${nSpecial ? ` No incluye las ${nSpecial} comida(s) libre(s).` : ''} Si cambiás el menú, la lista se actualiza.</p>
   ${html}
   <div class="actions center"><button class="ghost" data-shopclear>Desmarcar todo</button><button data-shopshare>Compartir lista</button></div>`;
 }
 
+// Cantidad de personas para la lista de compras (multiplica las cantidades).
+const shopN = () => Math.max(1, Math.min(12, +S.shopPeople || 1));
+function shopPeopleHTML() {
+  const n = shopN();
+  return `<section class="card people"><div class="prow"><span><b>Para cuántas personas</b><small>Multiplica todas las cantidades</small></span>
+    <div class="stepper"><button class="ghost" data-x="shopn" data-v="-1" aria-label="Una persona menos" ${n <= 1 ? 'disabled' : ''}>−</button><b>${n}</b><button class="ghost" data-x="shopn" data-v="1" aria-label="Una persona más" ${n >= 12 ? 'disabled' : ''}>+</button></div></div>
+    ${n > 1 ? '<p class="hint">Se calcula con tus porciones. Si alguien come bastante más que vos, conviene sumar una persona más o redondear para arriba algunos productos.</p>' : ''}</section>`;
+}
 function shopText() {
   return [...document.querySelectorAll('.shop li')].filter((li) => !li.querySelector('input').checked)
     .map((li) => `• ${li.querySelector('span').textContent}: ${li.querySelector('b').textContent}`).join('\n');
@@ -788,7 +800,7 @@ document.addEventListener('click', async (e) => {
   }
   if (d.shopclear != null) { S.shop = {}; store.save(); render(); return; }
   if (d.shopshare != null) {
-    const txt = 'Lista de compras (Fit)\n' + shopText();
+    const txt = `Lista de compras (Fit) · ${shopN()} persona${shopN() > 1 ? 's' : ''}\n` + shopText();
     try { if (navigator.share) await navigator.share({ text: txt }); else { await navigator.clipboard.writeText(txt); toast('Lista copiada'); } } catch (_) { /* cancelado */ }
     return;
   }

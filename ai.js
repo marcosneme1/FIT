@@ -613,8 +613,10 @@ function viewShopAI() {
   const key = 'ia' + S.aiPlan.created; const checked = S.shop[key] || {};
   const fmt = (g) => { const gg = Math.ceil(g / 10) * 10; return gg >= 1000 ? `${(gg / 1000).toFixed(2).replace('.', ',')} kg` : `${gg} g`; };
   return `${aiMenuToggle()}<h2 class="sec">Lista de compras (menú IA)</h2>
-  <p class="hint">Suma de los ingredientes del menú de la IA para 1 persona, pesos en crudo. Revisala: la IA puede nombrar un mismo alimento de dos formas.</p>
-  <section class="card"><ul class="shop">${aiShopItems().map(([k, v]) => `<li><label><input type="checkbox" data-aishop="${esc(k)}" ${checked[k] ? 'checked' : ''}><span>${esc(v.n)}</span><b>${fmt(v.g)}</b></label></li>`).join('')}</ul></section>
+  ${shopPeopleHTML()}
+  ${(() => { let total = 0, missing = 0; const items = aiShopItems(); items.forEach(([k, v]) => { const p = priceOfAI(k); if (p) total += (v.g * shopN() / 1000) * p.v; else missing++; }); return budgetHTML(total, missing, items.length); })()}
+  <p class="hint">Suma de los ingredientes del menú de la IA, pesos en crudo. Revisala: la IA puede nombrar un mismo alimento de dos formas.</p>
+  <section class="card"><ul class="shop">${aiShopItems().map(([k, v]) => `<li><label><input type="checkbox" data-aishop="${esc(k)}" ${checked[k] ? 'checked' : ''}><span>${esc(v.n)}</span><b>${fmt(v.g * shopN())}</b></label>${priceCell(priceOfAI(k), v.g * shopN(), `data-priceai="${esc(k)}"`)}</li>`).join('')}</ul></section>
   <div class="actions center"><button class="ghost" data-shopclear>Desmarcar todo</button><button data-shopshare>Compartir lista</button></div>`;
 }
 

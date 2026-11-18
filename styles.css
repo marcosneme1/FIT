@@ -323,3 +323,27 @@ input.gin { width: 70px; padding: 4px 6px; font-size: 14px; display: inline-bloc
 
 .photobtns { margin-top: 8px; }
 .photobtns .btn { padding: 12px 8px; text-align: center; }
+
+.people .prow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.people .prow span { display: flex; flex-direction: column; }
+.people .prow small { color: var(--muted); font-size: 12.5px; }
+.stepper { display: flex; align-items: center; gap: 10px; }
+.stepper button { width: 40px; height: 40px; padding: 0; font-size: 20px; border-radius: 50%; }
+.stepper button:disabled { opacity: .35; }
+.stepper b { min-width: 20px; text-align: center; font-size: 18px; }
+
+/* Precios y presupuesto */
+.shop li { display: flex; flex-direction: column; }
+.shop li .pr { align-self: flex-end; margin: -6px 0 6px; font-size: 12.5px; font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.shop li .pr.none { color: var(--muted); font-weight: 400; }
+.pr i, .budget i { font-style: normal; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 99px; }
+.src-P { background: var(--ok-bg); color: var(--ok-ink); }
+.src-G { background: var(--info-bg); color: var(--info-ink); }
+.src-R { background: var(--warn-bg); color: var(--warn-ink); }
+.src-U { background: var(--brand-soft); color: var(--brand); }
+.pedit { align-self: flex-end; display: flex; align-items: center; gap: 4px; margin: -4px 0 8px; font-size: 13px; color: var(--muted); }
+.pedit input { width: 96px; padding: 6px 8px; font-size: 15px; }
+.budget .prow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.budget .prow span { display: flex; flex-direction: column; }
+.budget .prow small { color: var(--muted); font-size: 12.5px; }
+.big2 { font-size: 24px; letter-spacing: -.5px; }

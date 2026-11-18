@@ -566,6 +566,8 @@ function xAction(t) {
   if (a === 'cneedreset') { calcNeed = null; render(); return; }
   if (a === 'ptype') { planType = d.v; render(); return; }
   if (a === 'forceupdate') { forceUpdate(); return; }
+  if (a === 'shopedit') { shopEdit = !shopEdit; render(); return; }
+  if (a === 'shopn') { S.shopPeople = Math.max(1, Math.min(12, shopN() + +d.v)); store.save(); render(); return; }
   if (a === 'seenupd') { S.seenVersion = APP_VERSION; store.save(); if (d.go) TAB = d.go; render(); return; }
   if (a === 'discarddraft') { if (confirm('¿Descartar lo que no guardaste?')) { draft.clear(); render(); } }
 }
