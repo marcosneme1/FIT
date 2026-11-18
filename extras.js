@@ -208,7 +208,7 @@ function planMealsFor(d, slots) {
       const day = S.aiPlan.dias[d]; const m = day && day.comidas.find((x) => x.comida === s.key);
       if (!m) return { s, name: '—', n: null };
       const free = !m.ingredientes || !m.ingredientes.length;
-      return { s, name: m.nombre, n: free ? { k: s.k, p: s.p, c: s.c, f: s.f } : sumLines(aiLines(m, ctxKey(d, s.key, 'ia'))), free };
+      return { s, name: m.nombre, n: free ? { k: s.k, p: s.p, c: s.c, f: s.f } : sumLines(aiLines(m, ctxKey(d, s.key, 'ia'))), free, ia: true };
     }
     const rid = S.menu.days[d][s.key]; const r = R(rid);
     if (!r) return { s, name: '—', n: null };
@@ -256,25 +256,29 @@ function viewDiario() {
   const isToday = diaDate === todayISO(); const [y, mo, da] = diaDate.split('-');
   const ST = { plan: '✓ Comí el plan', other: '✎ Comí otra cosa', skip: '✗ No comí' };
 
-  const cards = meals.map(({ s, name, n, free }) => {
+  const cards = meals.map(({ s, name, n, free, rid, ia }) => {
+    const r = rid ? R(rid) : null;
+    const link = ia ? `data-ai="meal" data-d="${d}" data-k="${s.key}"` : rid ? `data-recipe="${rid}" data-slot="${s.key}" data-day="${d}"` : '';
+    const rer = ia ? `<button class="ic" data-ai="remeal" data-d="${d}" data-k="${s.key}" aria-label="Otra opción con IA">↻</button>`
+      : r && r.type !== 'especial' ? `<button class="ic" data-reroll="${s.key}" data-rday="${d}" aria-label="Cambiar receta">↻</button>` : '';
     const m = L.meals[s.key]; const st = m && m.st; const mine = items.filter((it) => it.slot === s.key);
     const got = mealConsumed(L, s.key);
     const sugg = !st && !mine.length && pendK > 0 ? Math.max(0, Math.round((left * s.k) / pendK)) : null;
     return `<section class="card meal dmeal ${st ? 'st-' + st : ''}">
       <header><h3>${esc(s.name)}</h3><span class="pill">${esc(mealTime(P, s.key))}</span>${trainPill(s)}</header>
-      <p class="hint" style="margin-top:2px">Plan: ${esc(name)}${n ? ` · ${Math.round(n.k)} kcal` : ''}</p>
+      <div class="dr"><p class="rname">${link ? `<a href="#" ${link}>${esc(name)}</a>` : esc(name)} <span class="muted">· ${n ? Math.round(n.k) : '—'} kcal</span></p>${rer}</div>
       <div class="seg3">${Object.entries(ST).map(([v, l]) => `<button class="${st === v ? 'on' : ''}" data-x="mst" data-k="${s.key}" data-v="${v}" ${v === 'plan' && !n ? 'disabled' : ''}>${l}</button>`).join('')}</div>
       ${st === 'plan' ? `<div class="qrow"><span class="muted">Porción:</span>${QS.map(([q, l]) => `<button class="chip ${(m.q || 1) === q ? 'on' : ''}" data-x="mq" data-k="${s.key}" data-q="${q}">${l}</button>`).join('')}</div>${free ? '<p class="hint">Comida libre: se cuenta con el valor de esa comida del plan. Si sabés lo que comiste, mejor elegí "Comí otra cosa" y cargalo.</p>' : ''}` : ''}
       ${mine.length ? itemsHTML(mine) : ''}
-      ${st === 'other' ? `${mine.length ? '' : '<p class="hint">Cargá lo que comiste en esta comida:</p>'}<div class="actions"><button data-x="addfood" data-slot="${s.key}">+ Alimento</button><button class="ghost" data-x="quick" data-slot="${s.key}">Carga rápida</button><button class="ghost" data-x="scan" data-slot="${s.key}">Escanear</button></div>`
+      ${st === 'other' ? `${mine.length ? '' : '<p class="hint">Cargá lo que comiste en esta comida:</p>'}<div class="actions">${aiReady() ? `<button data-ai="photo" data-slot="${s.key}">📷 Foto del plato</button>` : ''}<button class="${aiReady() ? 'ghost' : ''}" data-x="addfood" data-slot="${s.key}">+ Alimento</button><button class="ghost" data-x="quick" data-slot="${s.key}">Carga rápida</button><button class="ghost" data-x="scan" data-slot="${s.key}">Escanear</button></div>`
         : st === 'plan' ? `<div class="actions"><button class="ghost sm" data-x="addfood" data-slot="${s.key}">+ Sumar algo más</button></div>` : ''}
       <p class="mtot">${st || mine.length ? `Comido: <b>${Math.round(got.k)} kcal</b> <span class="muted">de ${Math.round(s.k)} · P ${Math.round(got.p)} g</span>`
-        : sugg != null ? `Te quedan ≈ <b>${sugg} kcal</b> para esta comida <span class="muted">(objetivo ${Math.round(s.k)})</span>` : ''}</p>
+        : sugg != null && Math.abs(sugg - s.k) > s.k * 0.05 ? `Por lo que ya comiste hoy, para esta comida te quedan ≈ <b>${sugg} kcal</b> <span class="muted">(en vez de ${Math.round(s.k)})</span>` : ''}</p>
     </section>`;
   }).join('');
   const extras = items.filter((it) => !it.slot || !keys.includes(it.slot));
 
-  return `
+  return `${updBanner()}
   <div class="datebar"><button class="ghost" data-x="dprev" aria-label="Día anterior">‹</button>
     <div><b>${isToday ? 'Hoy' : DAYS[d]}</b> <span class="muted">${da}/${mo}/${y}</span></div>
     <button class="ghost" data-x="dnext" aria-label="Día siguiente">›</button></div>
@@ -288,12 +292,12 @@ function viewDiario() {
     ${pend.length && pend.length < slots.length ? (left > 0 ? ` Para lo que falta (${pend.map((s) => s.name.toLowerCase()).join(', ')}), cada comida tiene su sugerencia ajustada abajo.` : ' Para lo que falta, priorizá verduras y proteína magra.') : ''}</p>
   </section>
   <h2 class="sec">Comidas</h2>
-  <p class="hint">En cada comida marcá si comiste el plan (y cuánto), otra cosa o nada.</p>
+  <p class="hint">Tocá la receta para verla o reemplazar ingredientes (↻ la cambia). Después marcá si la comiste, otra cosa o nada.</p>
   ${cards}
   <h2 class="sec">Fuera de las comidas</h2>
   <section class="card">
     ${extras.length ? itemsHTML(extras) : '<p class="hint">Picoteos, bebidas o lo que no corresponda a una comida.</p>'}
-    <div class="actions"><button data-x="addfood">+ Alimento</button><button class="ghost" data-x="scan">Escanear producto</button><button class="ghost" data-x="quick">Carga rápida</button></div>
+    <div class="actions"><button data-x="addfood">+ Alimento</button>${aiReady() ? '<button class="ghost" data-ai="photo">📷 Foto</button>' : ''}<button class="ghost" data-x="scan">Escanear producto</button><button class="ghost" data-x="quick">Carga rápida</button></div>
   </section>`;
 }
 
@@ -487,6 +491,7 @@ function viewMas() {
     ${tile('recetas', '🍽️', 'Recetas', 'Buscar y marcar favoritas')}
     ${tile('chat', '💬', 'Chat IA', 'Consultas a tu nutri IA')}
     ${tile('', '📷', 'Escanear', 'Código de barras de un producto', 'scan')}
+    <button class="tile" data-ai="photo"><span class="ico">🍽️</span><b>Foto del plato</b><small>Calorías estimadas con IA</small></button>
     ${tile('perfil', '👤', 'Perfil', 'Datos, objetivos, entrenamiento')}
   </div>
   <section class="card"><h3>Versión de la app</h3>

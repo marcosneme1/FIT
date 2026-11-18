@@ -15,8 +15,8 @@ const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: 
 let S = Object.assign(FRESH(), store.load());
 // Borrador del formulario de perfil: se guarda mientras se escribe, para no perder nada si la app se cierra o se actualiza.
 // Versión de la app: al cambiar, se avisa que hay novedades y se invita a revisar el perfil (con los datos ya cargados).
-const APP_VERSION = '9';
-const APP_NEWS = 'Gemini: ahora la app elige un modelo que esté respondiendo (los más nuevos suelen estar saturados) y Probar conexión revisa todos los modelos y te deja elegir uno que funcione. Ahora la app se actualiza sola al abrirla, y en Más se ve la versión y hay un botón para buscar actualizaciones. Novedades en el Diario: en cada comida podés marcar si comiste el plan (y qué porción), otra cosa o nada, y te recalcula lo que te queda; y cada día podés elegir si fue de entrenamiento o de descanso.';
+const APP_VERSION = '10';
+const APP_NEWS = 'Fit está más simple: la pestaña Hoy junta el menú del día y lo que comiste; Plan muestra tus metas y una sola guía para armar el plato; Menú es un resumen de la semana. Nuevo: Foto del plato, Gemini estima las calorías cuando no tenés balanza (en Hoy → Comí otra cosa, o en Más).';
 const DRAFT_KEY = 'fit.draft';
 const draft = {
   load() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch (e) { return null; } },
@@ -270,6 +270,18 @@ function customSpecial(key, P = S.profile) {
       : 'Sin calorías cargadas: se cuenta como una comida normal del plan. Si sabés cuántas calorías tiene más o menos, cargalas en Perfil → punto 7 para que el promedio semanal sea más preciso.',
   };
 }
+// Cambia la receta de una comida del menú por otra del mismo tipo (respeta la vianda).
+function rerollMeal(dd, key) {
+  const P = S.profile; const s = calc(P).slots.find((x) => x.key === key); if (!s) return;
+  const cur = S.menu.days[dd][key];
+  const pool = poolFor(P, s.type).filter((id) => id !== cur);
+  if (!pool.length) return;
+  const nid = pool[Math.floor(Math.random() * pool.length)];
+  S.menu.days[dd][key] = nid;
+  if (P.vianda && key === 'cena' && dd < 6 && S.menu.days[dd + 1].almuerzo === cur) S.menu.days[dd + 1].almuerzo = nid;
+  if (P.vianda && key === 'almuerzo' && dd > 0 && S.menu.days[dd - 1].cena === cur) S.menu.days[dd - 1].cena = nid;
+  store.save(); render(); toast('Receta cambiada');
+}
 const R = (id) => (typeof id === 'string' && id.startsWith('custom:') ? customSpecial(id.slice(7)) : RECIPES.find((r) => r.id === id));
 
 function mealNutr(rid, slot, ctx) {
@@ -281,7 +293,7 @@ function mealNutr(rid, slot, ctx) {
 }
 
 // ---------------- Render general ----------------
-let TAB = 'plan';
+let TAB = 'diario';
 let menuDay = todayIdx();
 let recFilter = 'todas';
 let recSearch = '';
@@ -353,7 +365,13 @@ function exchanges(slot) {
   return `<div class="xch"><span><b>${h(slot.p / 20)}</b> porc. proteína</span><span><b>${h(slot.c / 30)}</b> porc. carbos</span><span><b>${h(slot.f / 10)}</b> porc. grasa</span></div>`;
 }
 
+function updBanner() {
+  return S.seenVersion !== APP_VERSION ? `<section class="card upd"><h3>Fit se actualizó</h3><p class="hint">Tus datos siguen guardados. ${esc(APP_NEWS)} Revisá tu perfil: el formulario se abre con todo lo que ya cargaste, así solo completás lo nuevo o cambiás lo que quieras.</p>
+    <div class="actions"><button data-x="seenupd" data-go="perfil">Revisar mi perfil</button><button class="ghost" data-x="seenupd">Listo</button></div></section>` : '';
+}
+
 let planType = null;
+let planSlot = null;
 function viewPlan() {
   const P = S.profile; const X = calc(P);
   const td = P.trainDays || []; const cycling = td.length > 0 && td.length < 7;
@@ -364,33 +382,38 @@ function viewPlan() {
   const slots = daySlots(X, P, pd); const T = sumSlots(slots);
   const k = Math.round(T.k / 10) * 10; const Tp = r0(T.p), Tc = r0(T.c), Tf = r0(T.f);
   const notes = X.notes.map((n) => `<div class="note ${n.t}">${esc(n.m)}</div>`).join('');
-  const slotsHTML = slots.map((s) => {
-    let body = '';
-    if (s.type === 'principal') {
-      const pl = plate(s, P);
-      const li = (arr) => arr.map((o) => `<li><span>${esc(FOODS[o.id].n)}</span><b>${o.g} g</b>${household(o.id, o.g) ? `<small>${household(o.id, o.g)}</small>` : ''}</li>`).join('');
-      const pw = (g) => r0((g / pl.total) * 100);
-      body = `<div class="platewrap">${plateSVG()}
+  if (!planSlot || !slots.some((x) => x.key === planSlot)) planSlot = (slots.find((x) => x.key === 'almuerzo') || slots[0]).key;
+  const ps = slots.find((x) => x.key === planSlot);
+  let guide = '';
+  if (ps.type === 'principal') {
+    const pl = plate(ps, P);
+    const li = (arr) => arr.map((o) => `<li><span>${esc(FOODS[o.id].n)}</span><b>${o.g} g</b>${household(o.id, o.g) ? `<small>${household(o.id, o.g)}</small>` : ''}</li>`).join('');
+    const pw = (g) => r0((g / pl.total) * 100);
+    guide = `<div class="platewrap">${plateSVG()}
         <table class="ptab"><tr><th>Grupo</th><th>Peso</th><th>% plato</th></tr>
           <tr><td><i class="dot v"></i>Verduras</td><td>${pl.vegG} g</td><td>${pw(pl.vegG)} %</td></tr>
           <tr><td><i class="dot p"></i>Proteína (cocida)</td><td>≈ ${pl.protCooked} g</td><td>${pw(pl.protCooked)} %</td></tr>
           <tr><td><i class="dot c"></i>Carbos (cocidos)</td><td>≈ ${pl.carbCooked} g</td><td>${pw(pl.carbCooked)} %</td></tr>
           <tr><td><i class="dot f"></i>Grasa agregada</td><td>${pl.fatG} g</td><td>${pw(pl.fatG)} %</td></tr>
           <tr class="tot"><td>Plato total</td><td>≈ ${pl.total} g</td><td>100 %</td></tr></table></div>
-        <p class="hint">Elegí <b>una</b> opción de cada grupo (pesos en crudo). Verduras: mezclá las que quieras hasta ${pl.vegG} g (≈ medio plato).</p>
+        <p class="hint">Elegí <b>una</b> opción de cada grupo (pesos en crudo).</p>
         <details><summary>Proteína: ${r0(pl.Pn)} g → opciones</summary><ul class="opts">${li(pl.prot)}</ul></details>
         <details><summary>Carbohidratos: ${r0(pl.C)} g → opciones</summary><ul class="opts">${li(pl.carb)}</ul></details>
         <details><summary>Grasa: ${r0(pl.F)} g → opciones</summary><ul class="opts">${li(pl.fat)}</ul></details>`;
-    } else {
-      const ideas = RECIPES.filter((r) => r.type === s.type && recipeAllowed(r, P, s.type)).slice(0, 3);
-      body = `${exchanges(s)}<p class="hint">Ideas: ${ideas.map((r) => `<a href="#" data-recipe="${r.id}" data-slot="${s.key}">${esc(r.n)}</a>`).join(' · ')}</p>`;
-    }
-    return `<section class="card meal">
-      <header><h3>${esc(s.name)}</h3><span class="pill">${esc(mealTime(P, s.key))}</span>${trainPill(s)}</header>
-      <div class="mrow"><b>${r0(s.k)} kcal</b><span class="p">P ${r0(s.p)} g</span><span class="c">C ${r0(s.c)} g</span><span class="f">G ${r0(s.f)} g</span></div>
-      ${trainTip(s) ? `<p class="hint">${trainTip(s)}</p>` : ''}
-      ${body}</section>`;
-  }).join('');
+  } else {
+    guide = `${exchanges(ps)}<p class="hint">1 porción de proteína = 20 g · de carbos = 30 g · de grasa = 10 g. Mirá las equivalencias en Intercambios, abajo.</p>`;
+  }
+  const slotsHTML = `<section class="card">
+    <table class="kv mtab"><tr><th></th><th>Hora</th><th>kcal</th><th>Prot.</th></tr>
+    ${slots.map((s) => `<tr class="${s.key === planSlot ? 'sel' : ''}" data-x="pslot" data-k="${s.key}"><td>${esc(s.name)}${s.pre ? ' <small class="muted">pre</small>' : s.post ? ' <small class="muted">post</small>' : ''}</td><td>${esc(mealTime(P, s.key))}</td><td>${r0(s.k)}</td><td>${r0(s.p)} g</td></tr>`).join('')}</table>
+  </section>
+  <section class="card meal">
+    <div class="chips scroll">${slots.map((s) => `<button class="chip ${s.key === planSlot ? 'on' : ''}" data-x="pslot" data-k="${s.key}">${esc(s.name)}</button>`).join('')}</div>
+    <div class="mrow"><b>${r0(ps.k)} kcal</b><span class="p">P ${r0(ps.p)} g</span><span class="c">C ${r0(ps.c)} g</span><span class="f">G ${r0(ps.f)} g</span></div>
+    ${trainTip(ps) ? `<p class="hint">${trainTip(ps)}</p>` : ''}
+    ${guide}
+    <div class="actions"><button class="ghost" data-tab="calc">⚖️ Todos los alimentos y cantidades</button></div>
+  </section>`;
 
   return `
   ${cycling ? `<div class="seg"><button class="${planType === 'train' ? 'on' : ''}" data-x="ptype" data-v="train">Día de entrenamiento</button><button class="${planType === 'rest' ? 'on' : ''}" data-x="ptype" data-v="rest">Día de descanso</button></div>` : ''}
@@ -406,8 +429,6 @@ function viewPlan() {
     </div>
     <div class="minis"><span>Fibra ≥ ${X.fib} g</span><span>Agua ≈ ${String(X.water).replace('.', ',')} L</span><span>Proteína ${String(X.pkg).replace('.', ',')} g/kg</span></div>
   </section>
-  ${S.seenVersion !== APP_VERSION ? `<section class="card upd"><h3>Fit se actualizó</h3><p class="hint">Tus datos siguen guardados. ${esc(APP_NEWS)} Revisá tu perfil: el formulario se abre con todo lo que ya cargaste, así solo completás lo nuevo o cambiás lo que quieras.</p>
-    <div class="actions"><button data-x="seenupd" data-go="perfil">Revisar mi perfil</button><button class="ghost" data-x="seenupd">Listo</button></div></section>` : ''}
   ${aiPlanCard()}
   ${notes}
   <details class="card">
@@ -425,8 +446,7 @@ function viewPlan() {
     </table>
     <p class="hint">Las fórmulas estiman; el gasto real puede variar ±10 %. Pesate 2–3 veces por semana en ayunas y mirá el promedio: si en 3–4 semanas no se mueve en la dirección buscada, ajustá ±100–150 kcal.</p>
   </details>
-  <h2 class="sec">Tus comidas</h2>
-  <div class="actions"><button class="ghost" data-tab="calc">⚖️ ¿Cuánto puedo comer de cada alimento?</button></div>
+  <h2 class="sec">Cómo armar cada comida</h2>
   ${slotsHTML}
   <h2 class="sec">Intercambios</h2>
   ${viewExchanges(P)}
@@ -453,37 +473,25 @@ function viewExchanges(P) {
 function viewMenu() {
   if (S.aiPlan && S.menuSource === 'ia') return viewMenuAI();
   const P = S.profile; const X = calc(P); const M = S.menu;
-  const day = M.days[menuDay]; const slotsD = daySlots(X, P, menuDay); const TD = sumSlots(slotsD);
-  let tot = { k: 0, p: 0, c: 0, f: 0 }; let hasFree = false;
-  const cards = slotsD.map((s) => {
-    const rid = day[s.key]; const r = R(rid); if (!r) return '';
-    const ctx = ctxKey(menuDay, s.key, 'fit'); const nsw = Object.keys(S.swaps[ctx] || {}).length;
-    const n = mealNutr(rid, s, ctx); if (n.free) hasFree = true;
-    tot.k += n.k; tot.p += n.p; tot.c += n.c; tot.f += n.f;
-    const linkedNext = P.vianda && s.key === 'cena' && menuDay < 6 && M.days[menuDay + 1].almuerzo === rid && r.type === 'principal';
-    const linkedPrev = P.vianda && s.key === 'almuerzo' && menuDay > 0 && M.days[menuDay - 1].cena === rid && r.type === 'principal';
-    return `<section class="card meal">
-      <header><h3>${esc(s.name)}</h3>${trainPill(s)}${r.type === 'especial' ? '<span class="pill sp">Especial</span>' : ''}${linkedPrev ? '<span class="pill">Vianda de anoche</span>' : ''}</header>
-      <p class="rname"><a href="#" data-recipe="${r.id}" data-slot="${s.key}" data-day="${menuDay}">${esc(r.n)}</a>${nsw ? ` <small class="sw">· ${nsw} reemplazo${nsw > 1 ? 's' : ''}</small>` : ''}</p>
-      ${linkedNext ? '<p class="hint">Cociná el doble: la otra mitad es la vianda de mañana.</p>' : ''}
-      ${n.free ? `<p class="hint">${esc(r.tip)}</p>` : `<div class="mrow"><b>${n.custom ? '≈ ' : ''}${r0(n.k)} kcal</b><span class="p">P ${r0(n.p)}</span><span class="c">C ${r0(n.c)}</span><span class="f">G ${r0(n.f)}</span>${n.custom ? '<span class="muted">macros estimados</span>' : ''}</div>`}
-      ${r.type === 'especial' ? '' : `<div class="actions"><button class="ghost" data-reroll="${s.key}">Cambiar</button></div>`}
-    </section>`;
-  }).join('');
-  // promedio semanal
   let wk = 0; let free = 0;
-  M.days.forEach((d, i) => daySlots(X, P, i).forEach((s) => { const n = mealNutr(d[s.key], s, ctxKey(i, s.key, 'fit')); if (n) { wk += n.k; if (n.free) free++; } }));
+  const days = M.days.map((day, d) => {
+    let tk = 0;
+    const rows = daySlots(X, P, d).map((s) => {
+      const rid = day[s.key]; const r = R(rid); if (!r) return '';
+      const ctx = ctxKey(d, s.key, 'fit'); const nsw = Object.keys(S.swaps[ctx] || {}).length;
+      const n = mealNutr(rid, s, ctx); tk += n.k; if (n.free) free++;
+      const vianda = P.vianda && s.key === 'almuerzo' && d > 0 && M.days[d - 1].cena === rid && r.type === 'principal';
+      return `<li><small class="ml">${esc(s.name)}</small><span><a href="#" data-recipe="${r.id}" data-slot="${s.key}" data-day="${d}">${esc(r.n)}</a>${vianda ? '<small class="muted"> · vianda</small>' : ''}${nsw ? ` <small class="sw">· ${nsw} cambio${nsw > 1 ? 's' : ''}</small>` : ''}</span>
+        <b>${n.free ? 'libre' : r0(n.k)}</b>${r.type === 'especial' ? '<span></span>' : `<button class="ic" data-reroll="${s.key}" data-rday="${d}" aria-label="Cambiar receta">↻</button>`}</li>`;
+    }).join('');
+    wk += tk;
+    return `<section class="card mday ${d === todayIdx() ? 'today' : ''}"><header><h3>${DAYS[d]}</h3>${isTrainDay(P, d) ? '<span class="pill tr">Entreno</span>' : ''}<span class="muted">${r0(tk)} kcal</span></header><ul class="mlist">${rows}</ul></section>`;
+  }).join('');
   const avg = wk / 7; const diff = avg - X.kcal;
   return `${aiMenuToggle()}
-  <div class="days">${DAYS_S.map((d, i) => `<button class="${i === menuDay ? 'on' : ''}" data-day="${i}">${d}</button>`).join('')}</div>
-  <h2 class="sec">${DAYS[menuDay]}${isTrainDay(P, menuDay) ? ' <span class="pill tr">Entrenamiento</span>' : ''}</h2>
-  <p class="hint">Tocá una receta para ver ingredientes y reemplazar alguno (ej.: carne por pollo) con la cantidad equivalente.</p>
-  ${cards}
-  <section class="card">
-    <div class="mrow"><b>Total del día: ${r0(tot.k)} kcal</b><span class="p">P ${r0(tot.p)}</span><span class="c">C ${r0(tot.c)}</span><span class="f">G ${r0(tot.f)}</span></div>
-    <p class="hint">Objetivo del día: ${r0(TD.k)} kcal · ${r0(TD.p)} g de proteína.${hasFree ? ' La comida libre se cuenta con el valor de esa comida del plan.' : ''}</p>
-    <p class="hint">Promedio semanal: <b>${r0(avg)} kcal/día</b> (${diff >= 0 ? '+' : ''}${r0(diff)} respecto del objetivo)${free ? `. Incluye ${free} comida(s) libre(s) contada(s) como una comida normal: si se te van mucho, se nota en el promedio.` : '.'}</p>
-  </section>
+  <p class="hint">Tocá una comida para ver la receta y reemplazar ingredientes. ↻ la cambia por otra.</p>
+  ${days}
+  <section class="card"><p class="hint" style="margin:0">Promedio semanal: <b>${r0(avg)} kcal/día</b> (${diff >= 0 ? '+' : ''}${r0(diff)} respecto del objetivo de ${X.kcal}).${free ? ` Las ${free} comida(s) libre(s) se cuentan como una comida normal.` : ''}</p></section>
   <div class="actions center"><button data-newmenu>Generar otro menú semanal</button></div>`;
 }
 
@@ -771,17 +779,7 @@ document.addEventListener('click', async (e) => {
   if (t.id === 'btnProfile') { TAB = 'perfil'; render(); return; }
   if (d.recipe) { e.preventDefault(); openRecipe(d.recipe, d.slot, d.day != null ? +d.day : null); return; }
   if (d.day != null) { menuDay = +d.day; render(); return; }
-  if (d.reroll) {
-    const P = S.profile; const s = calc(P).slots.find((x) => x.key === d.reroll);
-    const cur = S.menu.days[menuDay][s.key];
-    const pool = poolFor(P, s.type).filter((id) => id !== cur);
-    if (!pool.length) return;
-    const nid = pool[Math.floor(Math.random() * pool.length)];
-    S.menu.days[menuDay][s.key] = nid;
-    if (P.vianda && s.key === 'cena' && menuDay < 6 && S.menu.days[menuDay + 1].almuerzo === cur) S.menu.days[menuDay + 1].almuerzo = nid;
-    if (P.vianda && s.key === 'almuerzo' && menuDay > 0 && S.menu.days[menuDay - 1].cena === cur) S.menu.days[menuDay - 1].cena = nid;
-    store.save(); render(); return;
-  }
+  if (d.reroll) { rerollMeal(d.rday != null ? +d.rday : menuDay, d.reroll); return; }
   if (d.newmenu != null) { S.menu = genMenu(S.profile); S.shop = {}; store.save(); render(); toast('Menú nuevo generado'); return; }
   if (d.rf) { recFilter = d.rf; render(); return; }
   if (d.fav) {

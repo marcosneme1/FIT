@@ -437,6 +437,99 @@ async function aiDiag() {
   $('#modal').showModal();
 }
 
+// ---------------- Foto del plato ----------------
+// La persona saca una foto; Gemini identifica los alimentos y estima gramos, calorías y macros.
+// Se muestra editable (los gramos se pueden corregir) antes de guardarlo en la comida del día.
+let PHOTO = null;
+const PHOTO_SYSTEM = `Sos licenciado/a en Nutrición en Argentina, con experiencia en estimar porciones a partir de fotos.
+Reglas: identificá solo lo que se ve (no inventes alimentos ocultos); estimá el peso de cada alimento TAL COMO ESTÁ SERVIDO (cocido);
+usá valores de tablas de composición (USDA, ARGENFOODS); tené en cuenta el aceite o la manteca cuando el alimento se ve frito, salteado o con salsa;
+sé realista: si dudás entre dos tamaños, elegí el intermedio. Respondé en español rioplatense.`;
+const PHOTO_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    plato: S_STR,
+    alimentos: { type: 'ARRAY', items: { type: 'OBJECT', properties: { nombre: S_STR, gramos: { type: 'NUMBER' }, kcal: { type: 'NUMBER' }, proteinas: { type: 'NUMBER' }, carbohidratos: { type: 'NUMBER' }, grasas: { type: 'NUMBER' } }, required: ['nombre', 'gramos', 'kcal', 'proteinas', 'carbohidratos', 'grasas'] } },
+    confianza: { type: 'STRING', enum: ['baja', 'media', 'alta'] },
+    comentario: S_STR,
+  },
+  required: ['alimentos'],
+};
+
+async function resizeImage(file, max = 1024) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('No se pudo leer la imagen.')); img.src = url; });
+    const sc = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * sc); c.height = Math.round(img.naturalHeight * sc);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    const du = c.toDataURL('image/jpeg', 0.82);
+    return { mime: 'image/jpeg', data: du.split(',')[1], preview: du };
+  } finally { URL.revokeObjectURL(url); }
+}
+
+function openPhoto(slot) {
+  if (!aiReady()) { toast('Primero conectá Gemini en Más → Perfil'); TAB = 'perfil'; render(); return; }
+  PHOTO = { slot: slot || null, img: null, res: null };
+  $('#modalBody').innerHTML = `<h2>Foto del plato</h2>
+    <p class="hint">Sacá la foto desde arriba, con todo el plato a la vista. Si hay algo de referencia al lado (un tenedor, un vaso), ayuda a estimar el tamaño.</p>
+    <label class="btn photobtn">📷 Sacar o elegir foto<input type="file" accept="image/*" capture="environment" id="photoIn" hidden></label>
+    <img id="photoPrev" class="photoprev" alt="" hidden>
+    <label style="margin-top:10px">Aclaraciones (opcional)<textarea id="photoNote" rows="2" placeholder="Ej.: comí la mitad, la carne estaba frita, tenía mayonesa…"></textarea></label>
+    <div class="actions"><button id="photoGo" data-ai="photogo" disabled>Calcular calorías</button></div>
+    <div id="photoRes"></div>`;
+  $('#modal').showModal();
+}
+
+async function photoAnalyze() {
+  if (!PHOTO || !PHOTO.img) { toast('Primero sacá o elegí una foto'); return; }
+  const note = ($('#photoNote') || {}).value || '';
+  const signal = busy('Analizando la foto…');
+  try {
+    const r = await gemGenerate({
+      system: PHOTO_SYSTEM, signal, temperature: 0.3, schema: PHOTO_SCHEMA,
+      contents: [{ role: 'user', parts: [
+        { inlineData: { mimeType: PHOTO.img.mime, data: PHOTO.img.data } },
+        { text: `Identificá los alimentos de esta foto y estimá para cada uno: gramos (tal como está servido), kcal, proteínas, carbohidratos y grasas. Ponele un nombre corto al plato. Indicá tu confianza (baja, media o alta) y, en comentario, qué fue lo más difícil de estimar. Si la foto no muestra comida, devolvé la lista vacía y explicalo en comentario.${note ? `\nAclaraciones de la persona: ${note}` : ''}` },
+      ] }],
+    });
+    idle();
+    PHOTO.res = { plato: r.plato || 'Plato', confianza: r.confianza || '', comentario: r.comentario || '',
+      items: (r.alimentos || []).map((x) => ({ n: String(x.nombre || 'Alimento'), g0: +x.gramos || 0, g: Math.round(+x.gramos || 0), k: +x.kcal || 0, p: +x.proteinas || 0, c: +x.carbohidratos || 0, f: +x.grasas || 0 })) };
+    drawPhotoRes();
+  } catch (e) { aiFail(e); }
+}
+
+function photoTotHTML() {
+  const R0 = PHOTO.res; const tot = R0.items.reduce((t, it) => { const v = photoItemVals(it); t.k += v.k; t.p += v.p; t.c += v.c; t.f += v.f; return t; }, { k: 0, p: 0, c: 0, f: 0 });
+  return `<b>≈ ${Math.round(tot.k)} kcal</b><span class="p">P ${Math.round(tot.p)}</span><span class="c">C ${Math.round(tot.c)}</span><span class="f">G ${Math.round(tot.f)}</span>${R0.confianza ? `<span class="muted">confianza ${esc(R0.confianza)}</span>` : ''}`;
+}
+function photoItemVals(it) { const q = it.g0 ? it.g / it.g0 : 1; return { k: it.k * q, p: it.p * q, c: it.c * q, f: it.f * q }; }
+function drawPhotoRes() {
+  const R0 = PHOTO.res; const box = $('#photoRes'); if (!box || !R0) return;
+  if (!R0.items.length) { box.innerHTML = `<div class="note warn">${esc(R0.comentario || 'No se reconocieron alimentos en la foto.')}</div>`; return; }
+  const tot = R0.items.reduce((t, it) => { const v = photoItemVals(it); t.k += v.k; t.p += v.p; t.c += v.c; t.f += v.f; return t; }, { k: 0, p: 0, c: 0, f: 0 });
+  const slots = diaSlots(diaDate || todayISO());
+  box.innerHTML = `<h3>${esc(R0.plato)}</h3>
+    <div class="mrow" id="photoTot">${photoTotHTML()}</div>
+    <p class="hint">Corregí los gramos si sabés que eran más o menos: las calorías se recalculan.</p>
+    <ul class="opts">${R0.items.map((it, i) => { const v = photoItemVals(it); return `<li><span>${esc(it.n)}</span><b>${Math.round(v.k)} kcal <button class="x" data-ai="photodel" data-i="${i}" aria-label="Quitar">×</button></b>
+      <small><input class="gin" type="number" inputmode="numeric" value="${it.g}" data-pg="${i}"> g · <span class="pv">P ${Math.round(v.p)} · C ${Math.round(v.c)} · G ${Math.round(v.f)}</span></small></li>`; }).join('')}</ul>
+    ${R0.comentario ? `<p class="hint">${esc(R0.comentario)}</p>` : ''}
+    <p class="hint">Es una estimación a partir de una foto: puede errar bastante, sobre todo con aceites, salsas y lo que no se ve.</p>
+    <div class="grid2"><label>Guardar en<select id="photoSlot">${slots.map((s) => `<option value="${s.key}" ${s.key === PHOTO.slot ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}<option value="" ${PHOTO.slot ? '' : 'selected'}>Fuera de las comidas</option></select></label>
+    <button data-ai="photoadd" style="align-self:end">Agregar a hoy</button></div>`;
+}
+
+function photoAdd() {
+  if (!PHOTO || !PHOTO.res) return;
+  if (!diaDate) diaDate = todayISO();
+  ADDSLOT = ($('#photoSlot') || {}).value || null;
+  PHOTO.res.items.forEach((it) => { const v = photoItemVals(it); addItem({ n: it.n, g: it.g, k: v.k, p: v.p, c: v.c, f: v.f, est: true, src: 'foto' }); });
+  ADDSLOT = null; $('#modal').close(); TAB = 'diario'; render(); toast('Agregado desde la foto');
+}
+
 // ---------------- Vistas ----------------
 function mdLite(t) {
   return esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/^\s*[-*•]\s+/gm, '• ').replace(/\n/g, '<br>');
@@ -469,31 +562,25 @@ function aiMenuToggle() {
 
 function viewMenuAI() {
   const P = S.profile; const X = calc(P); const A = S.aiPlan;
-  const d = Math.min(menuDay, A.dias.length - 1); const day = A.dias[d];
-  const tot = { k: 0, p: 0, c: 0, f: 0 };
-  const cards = daySlots(X, P, d).map((s) => {
-    const m = day.comidas.find((x) => x.comida === s.key);
-    if (!m) return `<section class="card meal"><header><h3>${esc(s.name)}</h3></header><p class="hint">Sin receta.</p><div class="actions"><button class="ghost" data-ai="remeal" data-d="${d}" data-k="${s.key}">Generar con IA</button></div></section>`;
-    const ctx = ctxKey(d, s.key, 'ia'); const nsw = Object.keys(S.swaps[ctx] || {}).length;
-    const n = sumLines(aiLines(m, ctx)); const free = !m.ingredientes || !m.ingredientes.length;
-    if (free) { tot.k += s.k; tot.p += s.p; tot.c += s.c; tot.f += s.f; } else { tot.k += n.k; tot.p += n.p; tot.c += n.c; tot.f += n.f; }
-    return `<section class="card meal"><header><h3>${esc(s.name)}</h3>${trainPill(s)}</header>
-      <p class="rname"><a href="#" data-ai="meal" data-d="${d}" data-k="${s.key}">${esc(m.nombre)}</a>${nsw ? ` <small class="sw">· ${nsw} reemplazo${nsw > 1 ? 's' : ''}</small>` : ''}</p>
-      ${free ? `<p class="hint">${esc((m.preparacion || []).join(' '))}</p>` : `<div class="mrow"><b>${Math.round(n.k)} kcal</b><span class="p">P ${Math.round(n.p)}</span><span class="c">C ${Math.round(n.c)}</span><span class="f">G ${Math.round(n.f)}</span></div>`}
-      <div class="actions"><button class="ghost" data-ai="remeal" data-d="${d}" data-k="${s.key}">Otra opción con IA</button></div></section>`;
-  }).join('');
   let wk = 0;
-  A.dias.forEach((dd, di) => daySlots(X, P, di).forEach((s) => { const m = dd.comidas.find((x) => x.comida === s.key); const n = m && m.ingredientes && m.ingredientes.length ? sumLines(aiLines(m, ctxKey(di, s.key, 'ia'))).k : s.k; wk += n; }));
-  const TD = sumSlots(daySlots(X, P, d)); const avg = wk / A.dias.length; const dev = (tot.k - TD.k) / TD.k;
+  const days = A.dias.map((day, d) => {
+    let tk = 0;
+    const rows = daySlots(X, P, d).map((s) => {
+      const m = day.comidas.find((x) => x.comida === s.key);
+      if (!m) { tk += s.k; return `<li><small class="ml">${esc(s.name)}</small><span class="muted">Sin receta</span><b></b><button class="ic" data-ai="remeal" data-d="${d}" data-k="${s.key}" aria-label="Generar">↻</button></li>`; }
+      const ctx = ctxKey(d, s.key, 'ia'); const nsw = Object.keys(S.swaps[ctx] || {}).length;
+      const free = !m.ingredientes || !m.ingredientes.length; const n = free ? { k: s.k } : sumLines(aiLines(m, ctx)); tk += n.k;
+      return `<li><small class="ml">${esc(s.name)}</small><span><a href="#" data-ai="meal" data-d="${d}" data-k="${s.key}">${esc(m.nombre)}</a>${nsw ? ` <small class="sw">· ${nsw} cambio${nsw > 1 ? 's' : ''}</small>` : ''}</span>
+        <b>${free ? 'libre' : Math.round(n.k)}</b><button class="ic" data-ai="remeal" data-d="${d}" data-k="${s.key}" aria-label="Otra opción con IA">↻</button></li>`;
+    }).join('');
+    wk += tk;
+    const TD = sumSlots(daySlots(X, P, d)); const dev = (tk - TD.k) / TD.k;
+    return `<section class="card mday ${d === todayIdx() ? 'today' : ''}"><header><h3>${DAYS[d]}</h3>${isTrainDay(P, d) ? '<span class="pill tr">Entreno</span>' : ''}<span class="muted ${Math.abs(dev) > 0.12 ? 'warnc' : ''}">${Math.round(tk)} kcal</span></header><ul class="mlist">${rows}</ul></section>`;
+  }).join('');
   return `${aiMenuToggle()}
-  <div class="days">${DAYS_S.map((x, i) => `<button class="${i === d ? 'on' : ''}" data-day="${i}">${x}</button>`).join('')}</div>
-  <h2 class="sec">${DAYS[d]}</h2>${cards}
-  <section class="card">
-    <div class="mrow"><b>Total del día: ${Math.round(tot.k)} kcal</b><span class="p">P ${Math.round(tot.p)}</span><span class="c">C ${Math.round(tot.c)}</span><span class="f">G ${Math.round(tot.f)}</span></div>
-    <p class="hint">Objetivo del día: ${Math.round(TD.k)} kcal · ${Math.round(TD.p)} g de proteína. Promedio semanal del menú: <b>${Math.round(avg)} kcal/día</b>.</p>
-    ${Math.abs(dev) > 0.12 ? `<div class="note warn">Este día se desvía ${dev > 0 ? '+' : ''}${Math.round(dev * 100)} % del objetivo${day.comidas.some((m) => /libre/i.test(m.nombre)) ? ' (incluye una comida especial o libre)' : ''}. Podés pedir otra opción para alguna comida.</div>` : ''}
-    <p class="hint">Los valores nutricionales los informa la IA por ingrediente y Fit los suma: son aproximados y pueden tener errores.</p>
-  </section>
+  <p class="hint">Tocá una comida para ver la receta y reemplazar ingredientes. ↻ pide otra opción a la IA. Los valores los informa la IA: son aproximados.</p>
+  ${days}
+  <section class="card"><p class="hint" style="margin:0">Promedio semanal: <b>${Math.round(wk / A.dias.length)} kcal/día</b> (objetivo ${X.kcal}). En naranja, los días que se desvían más de 12 %.</p></section>
   <div class="actions center"><button class="ghost" data-ai="start">Rehacer plan y menú con IA</button></div>`;
 }
 
@@ -562,6 +649,10 @@ function aiAction(t) {
   if (a === 'disconnect') { if (confirm('¿Quitar la clave de Gemini de este teléfono?')) { S.ai = null; store.save(); render(); } return; }
   if (a === 'start') return aiStart();
   if (a === 'diag') return aiDiag();
+  if (a === 'photo') return openPhoto(t.dataset.slot);
+  if (a === 'photogo') return photoAnalyze();
+  if (a === 'photodel') { PHOTO.res.items.splice(+t.dataset.i, 1); drawPhotoRes(); return; }
+  if (a === 'photoadd') return photoAdd();
   if (a === 'usemodel') { S.ai.model = t.dataset.m; store.save(); $('#modal').close(); render(); toast('Ahora se usa ' + t.dataset.m); return; }
   if (a === 'diagcopy') { const txt = ($('#diagTxt') || {}).value || ''; (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Resultado copiado')).catch(() => { const ta = $('#diagTxt'); ta.hidden = false; ta.select(); toast('Copialo de la caja de texto'); }); return; }
   if (a === 'src') { S.menuSource = t.dataset.src; store.save(); render(); return; }
@@ -576,5 +667,22 @@ function aiAction(t) {
 document.addEventListener('change', (e) => {
   if (e.target.id === 'aiModel') { S.ai.model = e.target.value; store.save(); toast('Modelo actualizado'); }
   if (e.target.dataset.aishop) { const k = 'ia' + S.aiPlan.created; S.shop[k] = S.shop[k] || {}; S.shop[k][e.target.dataset.aishop] = e.target.checked; store.save(); }
+});
+document.addEventListener('change', async (e) => {
+  if (e.target.id !== 'photoIn' || !e.target.files[0]) return;
+  try {
+    PHOTO.img = await resizeImage(e.target.files[0]);
+    const im = $('#photoPrev'); im.src = PHOTO.img.preview; im.hidden = false; $('#photoGo').disabled = false;
+    PHOTO.res = null; $('#photoRes').innerHTML = '';
+  } catch (err) { toast(err.message || 'No se pudo leer la foto'); }
+});
+document.addEventListener('input', (e) => {
+  if (e.target.dataset && e.target.dataset.pg != null && PHOTO && PHOTO.res) {
+    const it = PHOTO.res.items[+e.target.dataset.pg]; it.g = +e.target.value || 0;
+    const li = e.target.closest('li'); const v = photoItemVals(it);
+    li.querySelector('b').firstChild.textContent = `${Math.round(v.k)} kcal `;
+    li.querySelector('.pv').textContent = `P ${Math.round(v.p)} · C ${Math.round(v.c)} · G ${Math.round(v.f)}`;
+    $('#photoTot').innerHTML = photoTotHTML();
+  }
 });
 document.addEventListener('submit', (e) => { if (e.target.id === 'chatForm') { e.preventDefault(); aiChatSend(); } });
