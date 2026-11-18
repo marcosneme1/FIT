@@ -59,6 +59,8 @@ async function listModels(key) {
 }
 
 function pickDefaultModel(list) {
+  const std = list.filter((m) => modelInfo(m.id) && modelInfo(m.id).fam === 'flash');
+  if (std.length) list = std;
   const ver = (id) => { const m = id.match(/gemini-(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
   const score = (id) => ver(id) * 10 + (/flash/.test(id) ? 3 : 0) - (/lite/.test(id) ? 2 : 0) - (/(preview|exp)/.test(id) ? 5 : 0) - (/-\d{3}$/.test(id) ? 0.5 : 0) - (/latest/.test(id) ? 0.2 : 0);
   return list.slice().sort((a, b) => score(b.id) - score(a.id))[0]?.id || null;
@@ -76,14 +78,38 @@ function rankedModels() {
 // Llama a Gemini con reintentos: si el modelo está saturado (5xx) reintenta, y si sigue fallando
 // (o no existe, o se agotó su cupo) prueba con otros modelos de la lista.
 const modelVer = (id) => { const m = String(id).match(/gemini-(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
-// Orden de modelos a probar: el elegido, uno estable de una generación anterior y otro distinto.
+// Nombres "estándar" de modelos (ej.: gemini-2.5-flash, gemini-3.8-flash-lite, gemini-2.0-flash-001).
+// Los experimentales o con nombre clave (ej.: gemini-4-argon, *-preview) no se usan como alternativa automática.
+function modelInfo(id) {
+  const m = String(id).match(/^gemini-(\d+(?:\.\d+)?)-(flash|pro)(-lite)?(?:-(\d{3}|latest))?$/);
+  return m ? { v: parseFloat(m[1]), fam: m[2], lite: !!m[3] } : null;
+}
+function stdModels() {
+  return (S.ai.models || []).map((m) => m.id).map((id) => ({ id, i: modelInfo(id) })).filter((x) => x.i);
+}
+// Orden de modelos a probar: el elegido, el Flash-Lite más nuevo (más liviano y, en general, con más capacidad),
+// el Flash de una generación anterior y otro Flash-Lite anterior.
 function fallbackOrder() {
-  const cur = S.ai.model; const out = [cur];
-  const pool = rankedModels().filter((id) => id !== cur && !/(preview|exp|pro)/.test(id));
-  const older = pool.find((id) => modelVer(id) < modelVer(cur));
-  const other = pool.find((id) => id !== older);
-  [older, other].forEach((id) => { if (id && !out.includes(id)) out.push(id); });
-  return out;
+  const cur = S.ai.model; const cv = modelVer(cur); const out = [cur];
+  const all = stdModels().filter((x) => x.id !== cur && x.i.fam === 'flash');
+  const byV = (a, b) => b.i.v - a.i.v;
+  const lites = all.filter((x) => x.i.lite).sort(byV);
+  const older = all.filter((x) => !x.i.lite && x.i.v < cv).sort(byV);
+  [lites[0], older[0], lites.find((x) => x.i.v < cv && x !== lites[0]), older[1]].forEach((x) => { if (x && !out.includes(x.id)) out.push(x.id); });
+  return out.slice(0, 4);
+}
+// Pedido mínimo a un modelo para ver si responde.
+async function pingModel(m, signal, ms = 25000) {
+  const t0 = Date.now();
+  try {
+    const d = await gemFetch(`models/${m}:generateContent`, { contents: userMsg('Respondé solamente: OK') }, signal, S.ai.key, ms);
+    const cand = d.candidates && d.candidates[0];
+    const txt = ((cand && cand.content && cand.content.parts) || []).filter((p) => !p.thought).map((p) => p.text || '').join('');
+    return { m, ok: !!txt, code: 200, ms: Date.now() - t0, det: txt ? txt.slice(0, 40) : `sin texto (${(cand && cand.finishReason) || '—'})` };
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    return { m, ok: false, code: e.status, ms: Date.now() - t0, det: String(e.raw || e.message).slice(0, 160) };
+  }
 }
 const isTransient = (e) => e.status === 'timeout' || e.status === 'network' || e.status >= 500;
 // Misma consulta pero sin esquema estricto: el formato se pide por escrito (algunos modelos fallan con esquemas).
@@ -230,7 +256,13 @@ async function aiConnect() {
     const models = await listModels(key);
     if (!models.length) throw new Error('La clave funciona pero no se encontraron modelos de texto disponibles.');
     S.ai = { key, models, model: (S.ai && models.some((m) => m.id === S.ai.model)) ? S.ai.model : pickDefaultModel(models) };
-    store.save(); idle(); render(); toast('Gemini conectado');
+    store.save();
+    // Elegir un modelo que esté respondiendo ahora (los más nuevos suelen estar saturados).
+    let chosen = null;
+    for (const m of fallbackOrder()) { busyMsg(`Probando ${m}…`); const r = await pingModel(m, aiAbort && aiAbort.signal, 20000); if (r.ok) { chosen = m; break; } }
+    if (chosen) S.ai.model = chosen;
+    store.save(); idle(); render();
+    toast(chosen ? `Gemini conectado (${chosen})` : 'Clave válida, pero ningún modelo respondió ahora. Probá más tarde con "Probar conexión".');
   } catch (e) { aiFail(e); }
 }
 
@@ -370,40 +402,38 @@ async function aiDiag() {
   const signal = busy('Probando la conexión con Gemini…');
   const model = S.ai.model;
   const schemaQ = { type: 'OBJECT', properties: { preguntas: { type: 'ARRAY', items: S_STR } }, required: ['preguntas'] };
-  const tests = [
-    ['Pedido mínimo', { contents: userMsg('Respondé solamente: OK') }],
-    ['Con instrucciones de sistema', { systemInstruction: { parts: [{ text: 'Respondé en español, muy breve.' }] }, contents: userMsg('Decí hola.') }],
-    ['Respuesta en JSON', { contents: userMsg('Devolvé {"ok": true}'), generationConfig: { responseMimeType: 'application/json' } }],
-    ['JSON con esquema', { contents: userMsg('Hacé 2 preguntas cortas sobre hábitos de comida.'), generationConfig: { responseMimeType: 'application/json', responseSchema: schemaQ } }],
-    ['Pedido real de la app', { systemInstruction: { parts: [{ text: AI_SYSTEM }] }, contents: userMsg(`${aiProfileText()}\n\nHacé entre 3 y 6 preguntas de seguimiento para personalizar el plan.`), generationConfig: { temperature: 0.5, responseMimeType: 'application/json', responseSchema: schemaQ } }],
-  ];
   const rows = [];
-  const run = async (name, m, body) => {
-    busyMsg(`Probando: ${name} (${m})…`);
+  try {
+    // 1) El modelo elegido: pedido mínimo y pedido real de la app.
+    busyMsg(`Probando ${model}…`);
+    rows.push(Object.assign(await pingModel(model, signal, 45000), { name: 'Pedido mínimo' }));
+    busyMsg(`Probando pedido real con ${model}…`);
     const t0 = Date.now();
     try {
-      const d = await gemFetch(`models/${m}:generateContent`, body, signal, S.ai.key, 60000);
-      const cand = d.candidates && d.candidates[0];
-      const txt = ((cand && cand.content && cand.content.parts) || []).filter((p) => !p.thought).map((p) => p.text || '').join('');
-      rows.push({ name, m, ok: !!txt, code: 200, ms: Date.now() - t0, det: txt ? txt.slice(0, 80) : `sin texto (${(cand && cand.finishReason) || 'sin motivo'})` });
-    } catch (e) {
-      if (e.name === 'AbortError') throw e;
-      rows.push({ name, m, ok: false, code: e.status, ms: Date.now() - t0, det: String(e.raw || e.message).slice(0, 220) });
-    }
-  };
-  try {
-    for (const [name, body] of tests) await run(name, model, body);
-    for (const m of fallbackOrder().slice(1)) await run('Pedido mínimo', m, tests[0][1]);
+      await gemFetch(`models/${model}:generateContent`, { systemInstruction: { parts: [{ text: AI_SYSTEM }] }, contents: userMsg(`${aiProfileText()}\n\nHacé entre 3 y 6 preguntas de seguimiento para personalizar el plan.`), generationConfig: { temperature: 0.5, responseMimeType: 'application/json', responseSchema: schemaQ } }, signal, S.ai.key, 60000);
+      rows.push({ name: 'Pedido real de la app', m: model, ok: true, code: 200, ms: Date.now() - t0, det: 'OK' });
+    } catch (e) { if (e.name === 'AbortError') throw e; rows.push({ name: 'Pedido real de la app', m: model, ok: false, code: e.status, ms: Date.now() - t0, det: String(e.raw || e.message).slice(0, 160) }); }
+    // 2) Los demás modelos estándar de la lista, con un pedido mínimo.
+    const others = stdModels().filter((x) => x.id !== model).sort((a, b) => (a.i.fam === 'pro') - (b.i.fam === 'pro') || b.i.v - a.i.v || a.i.lite - b.i.lite).slice(0, 10);
+    for (const x of others) { busyMsg(`Probando ${x.id}…`); rows.push(Object.assign(await pingModel(x.id, signal, 25000), { name: 'Pedido mínimo' })); }
     idle();
   } catch (e) { aiFail(e); return; }
+  const curOk = rows.filter((r) => r.m === model).every((r) => r.ok);
+  const okOthers = rows.filter((r) => r.m !== model && r.ok);
+  let switched = null;
+  if (!curOk && okOthers.length) {
+    const best = okOthers.slice().sort((a, b) => { const ia = modelInfo(a.m), ib = modelInfo(b.m); return (ia.fam === 'pro') - (ib.fam === 'pro') || ib.v - ia.v || ia.lite - ib.lite; })[0];
+    switched = best.m; S.ai.model = best.m; store.save(); render();
+  }
   const txt = [`Fit v${typeof APP_VERSION !== 'undefined' ? APP_VERSION : '?'} · ${new Date().toLocaleString('es-AR')} · ${navigator.userAgent.replace(/\s+/g, ' ').slice(0, 120)}`]
-    .concat(rows.map((r) => `${r.ok ? 'OK ' : 'ERR'} | ${r.name} | ${r.m} | ${r.code} | ${(r.ms / 1000).toFixed(1)} s | ${r.det}`)).join('\n');
-  const allOk = rows.every((r) => r.ok);
+    .concat(rows.map((r) => `${r.ok ? 'OK ' : 'ERR'} | ${r.name} | ${r.m} | ${r.code} | ${(r.ms / 1000).toFixed(1)} s | ${r.det}`)).concat(switched ? [`Cambiado automáticamente a: ${switched}`] : []).join('\n');
   $('#modalBody').innerHTML = `<h2>Resultado de la prueba</h2>
-    <p class="hint">${allOk ? 'Todo funcionó: la conexión con Gemini anda bien.' : 'Algunas pruebas fallaron. Tocá "Copiar resultado" y pegalo en el chat de soporte (no incluye tu clave).'}</p>
-    <ul class="opts">${rows.map((r) => `<li><span>${r.ok ? '✅' : '❌'} ${esc(r.name)}</span><b>${(r.ms / 1000).toFixed(1)} s</b><small>${esc(r.m)} · ${esc(String(r.code))} · ${esc(r.det)}</small></li>`).join('')}</ul>
+    ${curOk ? `<div class="note ok">${esc(model)} funciona bien.</div>`
+      : switched ? `<div class="note ok">${esc(model)} no está respondiendo. Se cambió automáticamente a <b>${esc(switched)}</b>, que sí respondió. Ya podés volver a intentar.</div>`
+      : '<div class="note warn">Ningún modelo respondió en este momento. Suele ser saturación temporal de Google: probá de nuevo más tarde. Si se repite, tocá "Copiar resultado" y pegalo en el chat de soporte (no incluye tu clave).</div>'}
+    <ul class="opts">${rows.map((r) => `<li><span>${r.ok ? '✅' : '❌'} ${esc(r.m)}</span><b>${(r.ms / 1000).toFixed(1)} s</b><small>${esc(r.name)} · ${esc(String(r.code))} · ${esc(r.det)}</small>${r.ok && r.m !== S.ai.model ? `<button class="swapbtn" data-ai="usemodel" data-m="${esc(r.m)}">Usar este</button>` : ''}</li>`).join('')}</ul>
     <textarea id="diagTxt" rows="6" hidden readonly>${esc(txt)}</textarea>
-    <div class="actions"><button data-ai="diagcopy">Copiar resultado</button></div>`;
+    <div class="actions"><button class="ghost" data-ai="diagcopy">Copiar resultado</button></div>`;
   $('#modal').showModal();
 }
 
@@ -532,6 +562,7 @@ function aiAction(t) {
   if (a === 'disconnect') { if (confirm('¿Quitar la clave de Gemini de este teléfono?')) { S.ai = null; store.save(); render(); } return; }
   if (a === 'start') return aiStart();
   if (a === 'diag') return aiDiag();
+  if (a === 'usemodel') { S.ai.model = t.dataset.m; store.save(); $('#modal').close(); render(); toast('Ahora se usa ' + t.dataset.m); return; }
   if (a === 'diagcopy') { const txt = ($('#diagTxt') || {}).value || ''; (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Resultado copiado')).catch(() => { const ta = $('#diagTxt'); ta.hidden = false; ta.select(); toast('Copialo de la caja de texto'); }); return; }
   if (a === 'src') { S.menuSource = t.dataset.src; store.save(); render(); return; }
   if (a === 'remeal') return aiRemeal(+t.dataset.d, t.dataset.k);

@@ -15,8 +15,8 @@ const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: 
 let S = Object.assign(FRESH(), store.load());
 // Borrador del formulario de perfil: se guarda mientras se escribe, para no perder nada si la app se cierra o se actualiza.
 // Versión de la app: al cambiar, se avisa que hay novedades y se invita a revisar el perfil (con los datos ya cargados).
-const APP_VERSION = '8';
-const APP_NEWS = 'Mejoras en la conexión con Gemini y nuevo botón Probar conexión (Más → Perfil → Inteligencia artificial). Ahora la app se actualiza sola al abrirla, y en Más se ve la versión y hay un botón para buscar actualizaciones. Novedades en el Diario: en cada comida podés marcar si comiste el plan (y qué porción), otra cosa o nada, y te recalcula lo que te queda; y cada día podés elegir si fue de entrenamiento o de descanso.';
+const APP_VERSION = '9';
+const APP_NEWS = 'Gemini: ahora la app elige un modelo que esté respondiendo (los más nuevos suelen estar saturados) y Probar conexión revisa todos los modelos y te deja elegir uno que funcione. Ahora la app se actualiza sola al abrirla, y en Más se ve la versión y hay un botón para buscar actualizaciones. Novedades en el Diario: en cada comida podés marcar si comiste el plan (y qué porción), otra cosa o nada, y te recalcula lo que te queda; y cada día podés elegir si fue de entrenamiento o de descanso.';
 const DRAFT_KEY = 'fit.draft';
 const draft = {
   load() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch (e) { return null; } },
