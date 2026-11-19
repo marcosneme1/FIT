@@ -546,13 +546,13 @@ function aiPlanCard() {
     return `<section class="card ai"><h3>✨ Armá tu plan con IA</h3><p class="hint">La IA te va a hacer unas preguntas más y después arma tu plan explicado y un menú semanal con recetas, respetando tus calorías y macros.</p>
       <div class="actions"><button data-ai="start">Empezar</button></div></section>`;
   }
-  return `<section class="card ai"><h3>✨ Tu plan explicado</h3>
+  return `<details class="card ai"><summary>✨ Tu plan explicado por la IA</summary>
     <div class="aitext">${mdLite(A.resumen)}</div>
     ${A.alertas && A.alertas.length ? A.alertas.map((x) => `<div class="note warn">${esc(x)}</div>`).join('') : ''}
-    ${A.consejos && A.consejos.length ? `<details open><summary>Consejos para vos</summary><ul class="tips">${A.consejos.map((x) => `<li>${mdLite(x)}</li>`).join('')}</ul></details>` : ''}
+    ${A.consejos && A.consejos.length ? `<details><summary>Consejos para vos</summary><ul class="tips">${A.consejos.map((x) => `<li>${mdLite(x)}</li>`).join('')}</ul></details>` : ''}
     <div class="actions"><button data-tab="menu">Ver menú de la IA</button><button class="ghost" data-ai="start">Rehacer plan</button></div>
     <p class="hint">Generado con ${esc(A.model)} el ${new Date(A.created).toLocaleDateString('es-AR')}. Si cambiás tu perfil, conviene rehacerlo.</p>
-  </section>`;
+  </details>`;
 }
 
 function aiMenuToggle() {

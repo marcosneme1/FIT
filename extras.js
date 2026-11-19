@@ -476,7 +476,9 @@ function viewCalc() {
     <p class="hint">Ej.: 150 g de carne → ¿cuánto pollo es lo mismo en proteína?</p>
     <div class="grid2"><label>Cantidad (g)<input type="number" id="cg" inputmode="decimal" value="${calcG}"></label><label>Alimento${foodSelect('cfood', calcFood)}</label></div>
     <div id="convRes">${convResHTML()}</div>
-  </section>`;
+  </section>
+  <h2 class="sec">Intercambios</h2>
+  ${viewExchanges(P)}`;
 }
 
 // =====================================================================
@@ -565,6 +567,8 @@ function xAction(t) {
   if (a === 'cmacro') { calcMacro = d.k; calcNeed = null; render(); return; }
   if (a === 'cneedreset') { calcNeed = null; render(); return; }
   if (a === 'ptype') { planType = d.v; render(); return; }
+  if (a === 'pslot') { planSlot = d.k; render(); return; }
+  if (a === 'gocalc') { calcSlot = planSlot; calcType = planType; calcNeed = null; calcMacro = 'p'; TAB = 'calc'; render(); return; }
   if (a === 'forceupdate') { forceUpdate(); return; }
   if (a === 'shopedit') { shopEdit = !shopEdit; render(); return; }
   if (a === 'shopn') { S.shopPeople = Math.max(1, Math.min(12, shopN() + +d.v)); store.save(); render(); return; }

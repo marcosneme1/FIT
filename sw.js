@@ -1,6 +1,6 @@
 // Service worker: guarda la app en el teléfono para que funcione sin internet.
-const CACHE = 'fit-v12';
-const ASSETS = ['./', 'index.html', 'styles.css?v=12', 'data.js?v=12', 'ai.js?v=12', 'extras.js?v=12', 'prices.js?v=12', 'app.js?v=12', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png'];
+const CACHE = 'fit-v13';
+const ASSETS = ['./', 'index.html', 'styles.css?v=13', 'data.js?v=13', 'ai.js?v=13', 'extras.js?v=13', 'prices.js?v=13', 'app.js?v=13', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));

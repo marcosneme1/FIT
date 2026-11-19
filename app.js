@@ -15,8 +15,8 @@ const FRESH = () => ({ profile: null, menu: null, shop: {}, progress: [], favs: 
 let S = Object.assign(FRESH(), store.load());
 // Borrador del formulario de perfil: se guarda mientras se escribe, para no perder nada si la app se cierra o se actualiza.
 // Versión de la app: al cambiar, se avisa que hay novedades y se invita a revisar el perfil (con los datos ya cargados).
-const APP_VERSION = '12';
-const APP_NEWS = 'Nuevo en Compras: elegí para cuántas personas es la lista, y mirá el presupuesto semanal estimado con precios de INDEC (octubre 2026) que podés reemplazar por los tuyos. Fit está más simple: Hoy junta el menú del día y lo que comiste, y hay Foto del plato con Gemini.';
+const APP_VERSION = '13';
+const APP_NEWS = 'Plan más simple: elegí la comida y ves cómo armar el plato en 4 renglones, con ejemplos. Las listas completas y los intercambios están en la Calculadora (Ver más opciones). En Compras: cantidad de personas y presupuesto estimado.';
 const DRAFT_KEY = 'fit.draft';
 const draft = {
   load() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch (e) { return null; } },
@@ -381,38 +381,38 @@ function viewPlan() {
   if (cycling && planType === 'rest' && td.includes(pd)) pd = [0, 1, 2, 3, 4, 5, 6].find((i) => !td.includes(i));
   const slots = daySlots(X, P, pd); const T = sumSlots(slots);
   const k = Math.round(T.k / 10) * 10; const Tp = r0(T.p), Tc = r0(T.c), Tf = r0(T.f);
-  const notes = X.notes.map((n) => `<div class="note ${n.t}">${esc(n.m)}</div>`).join('');
+  // Avisos importantes a la vista; el resto, plegado.
+  const warns = X.notes.filter((n) => n.t === 'warn').map((n) => `<div class="note warn">${esc(n.m)}</div>`).join('');
+  const infos = X.notes.filter((n) => n.t !== 'warn');
+  const infosHTML = infos.length ? `<details class="card"><summary>Notas sobre tu plan (${infos.length})</summary>${infos.map((n) => `<div class="note ${n.t}">${esc(n.m)}</div>`).join('')}</details>` : '';
   if (!planSlot || !slots.some((x) => x.key === planSlot)) planSlot = (slots.find((x) => x.key === 'almuerzo') || slots[0]).key;
   const ps = slots.find((x) => x.key === planSlot);
+  const ex1 = (arr) => { const o = arr[0]; return o ? `${o.g} g de ${esc(FOODS[o.id].n.replace(/\s*\(.*?\)/g, '').toLowerCase())}` : ''; };
   let guide = '';
   if (ps.type === 'principal') {
     const pl = plate(ps, P);
-    const li = (arr) => arr.map((o) => `<li><span>${esc(FOODS[o.id].n)}</span><b>${o.g} g</b>${household(o.id, o.g) ? `<small>${household(o.id, o.g)}</small>` : ''}</li>`).join('');
-    const pw = (g) => r0((g / pl.total) * 100);
+    const cdas = Math.max(0.5, Math.round((pl.F / 13.5) * 2) / 2);
     guide = `<div class="platewrap">${plateSVG()}
-        <table class="ptab"><tr><th>Grupo</th><th>Peso</th><th>% plato</th></tr>
-          <tr><td><i class="dot v"></i>Verduras</td><td>${pl.vegG} g</td><td>${pw(pl.vegG)} %</td></tr>
-          <tr><td><i class="dot p"></i>Proteína (cocida)</td><td>≈ ${pl.protCooked} g</td><td>${pw(pl.protCooked)} %</td></tr>
-          <tr><td><i class="dot c"></i>Carbos (cocidos)</td><td>≈ ${pl.carbCooked} g</td><td>${pw(pl.carbCooked)} %</td></tr>
-          <tr><td><i class="dot f"></i>Grasa agregada</td><td>${pl.fatG} g</td><td>${pw(pl.fatG)} %</td></tr>
-          <tr class="tot"><td>Plato total</td><td>≈ ${pl.total} g</td><td>100 %</td></tr></table></div>
-        <p class="hint">Elegí <b>una</b> opción de cada grupo (pesos en crudo).</p>
-        <details><summary>Proteína: ${r0(pl.Pn)} g → opciones</summary><ul class="opts">${li(pl.prot)}</ul></details>
-        <details><summary>Carbohidratos: ${r0(pl.C)} g → opciones</summary><ul class="opts">${li(pl.carb)}</ul></details>
-        <details><summary>Grasa: ${r0(pl.F)} g → opciones</summary><ul class="opts">${li(pl.fat)}</ul></details>`;
+      <ul class="plist">
+        <li><i class="dot v"></i><span><b>Verduras:</b> medio plato (≈ ${pl.vegG} g)</span></li>
+        <li><i class="dot p"></i><span><b>Proteína:</b> ≈ ${pl.protCooked} g cocida<small>ej.: ${ex1(pl.prot)} en crudo</small></span></li>
+        <li><i class="dot c"></i><span><b>Carbos:</b> ≈ ${pl.carbCooked} g cocidos<small>ej.: ${ex1(pl.carb)} en crudo</small></span></li>
+        <li><i class="dot f"></i><span><b>Aceite:</b> ${String(cdas).replace('.', ',')} cucharada${cdas > 1 ? 's' : ''}</span></li>
+      </ul></div>`;
   } else {
-    guide = `${exchanges(ps)}<p class="hint">1 porción de proteína = 20 g · de carbos = 30 g · de grasa = 10 g. Mirá las equivalencias en Intercambios, abajo.</p>`;
+    const idea = RECIPES.find((r) => r.type === ps.type && recipeAllowed(r, P, ps.type));
+    guide = `<ul class="plist">
+        <li><i class="dot p"></i><span><b>Proteína:</b> ${r0(ps.p)} g</span></li>
+        <li><i class="dot c"></i><span><b>Carbos:</b> ${r0(ps.c)} g</span></li>
+        <li><i class="dot f"></i><span><b>Grasas:</b> ${r0(ps.f)} g</span></li>
+      </ul>${idea ? `<p class="hint">Por ejemplo: <a href="#" data-recipe="${idea.id}" data-slot="${ps.key}">${esc(idea.n)}</a></p>` : ''}`;
   }
-  const slotsHTML = `<section class="card">
-    <table class="kv mtab"><tr><th></th><th>Hora</th><th>kcal</th><th>Prot.</th></tr>
-    ${slots.map((s) => `<tr class="${s.key === planSlot ? 'sel' : ''}" data-x="pslot" data-k="${s.key}"><td>${esc(s.name)}${s.pre ? ' <small class="muted">pre</small>' : s.post ? ' <small class="muted">post</small>' : ''}</td><td>${esc(mealTime(P, s.key))}</td><td>${r0(s.k)}</td><td>${r0(s.p)} g</td></tr>`).join('')}</table>
-  </section>
-  <section class="card meal">
+  const slotsHTML = `<section class="card meal">
     <div class="chips scroll">${slots.map((s) => `<button class="chip ${s.key === planSlot ? 'on' : ''}" data-x="pslot" data-k="${s.key}">${esc(s.name)}</button>`).join('')}</div>
-    <div class="mrow"><b>${r0(ps.k)} kcal</b><span class="p">P ${r0(ps.p)} g</span><span class="c">C ${r0(ps.c)} g</span><span class="f">G ${r0(ps.f)} g</span></div>
+    <p class="mhead"><b>${esc(ps.name)}</b> · ${esc(mealTime(P, ps.key))} · <b>${r0(ps.k)} kcal</b>${ps.pre ? ' · pre-entreno' : ps.post ? ' · post-entreno' : ''}</p>
     ${trainTip(ps) ? `<p class="hint">${trainTip(ps)}</p>` : ''}
     ${guide}
-    <div class="actions"><button class="ghost" data-tab="calc">⚖️ Todos los alimentos y cantidades</button></div>
+    <div class="actions"><button class="ghost" data-x="gocalc">Ver más opciones de alimentos →</button></div>
   </section>`;
 
   return `
@@ -429,8 +429,11 @@ function viewPlan() {
     </div>
     <div class="minis"><span>Fibra ≥ ${X.fib} g</span><span>Agua ≈ ${String(X.water).replace('.', ',')} L</span><span>Proteína ${String(X.pkg).replace('.', ',')} g/kg</span></div>
   </section>
+  ${warns}
+  <h2 class="sec">Tu plato</h2>
+  ${slotsHTML}
   ${aiPlanCard()}
-  ${notes}
+  ${infosHTML}
   <details class="card">
     <summary>¿De dónde salen estos números?</summary>
     <table class="kv">
@@ -446,10 +449,6 @@ function viewPlan() {
     </table>
     <p class="hint">Las fórmulas estiman; el gasto real puede variar ±10 %. Pesate 2–3 veces por semana en ayunas y mirá el promedio: si en 3–4 semanas no se mueve en la dirección buscada, ajustá ±100–150 kcal.</p>
   </details>
-  <h2 class="sec">Cómo armar cada comida</h2>
-  ${slotsHTML}
-  <h2 class="sec">Intercambios</h2>
-  ${viewExchanges(P)}
   <p class="disclaimer">Fit es una herramienta orientativa basada en fórmulas y guías generales. No reemplaza la consulta con un/a nutricionista o médico/a.</p>`;
 }
 

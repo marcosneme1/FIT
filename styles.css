@@ -347,3 +347,11 @@ input.gin { width: 70px; padding: 4px 6px; font-size: 14px; display: inline-bloc
 .budget .prow span { display: flex; flex-direction: column; }
 .budget .prow small { color: var(--muted); font-size: 12.5px; }
 .big2 { font-size: 24px; letter-spacing: -.5px; }
+
+/* Plan simplificado */
+.mhead { margin: 10px 0 0; font-size: 14.5px; }
+.plist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14.5px; }
+.plist li { display: flex; gap: 8px; align-items: flex-start; }
+.plist li .dot { margin-top: 6px; flex: none; }
+.plist small { display: block; color: var(--muted); font-size: 12.5px; }
+details.card.ai > summary { color: var(--brand); }
